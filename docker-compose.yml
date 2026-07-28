@@ -1,0 +1,21 @@
+services:
+  database:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orbit_finance}
+      POSTGRES_USER: ${POSTGRES_USER:-orbit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbit}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - orbit-postgres-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orbit} -d ${POSTGRES_DB:-orbit_finance}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  orbit-postgres-data:
