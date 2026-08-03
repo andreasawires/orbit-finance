@@ -3,17 +3,27 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
+    "dev": "next dev --webpack --hostname 127.0.0.1",
     "build": "next build --webpack",
-    "start": "next start",
-    "lint": "eslint ."
+    "start": "next start --hostname 127.0.0.1",
+    "start:docker": "next start --hostname 0.0.0.0",
+    "lint": "eslint .",
+    "test": "node --import tsx --test tests/import-validation.test.ts",
+    "db:migrate": "node --env-file-if-exists=.env.local --import tsx scripts/migrate.ts",
+    "worker": "node --env-file-if-exists=.env.local --import tsx workers/import-worker.ts"
   },
   "dependencies": {
+    "@firecrawl/pdf-inspector": "^1.11.2",
+    "csv-parse": "^6.1.0",
     "lucide-react": "^0.468.0",
-    "next": "^16.2.10",
+    "next": "^16.2.12",
     "pg": "^8.22.0",
+    "pg-boss": "^12.26.4",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "sharp": "^0.35.3",
+    "tsx": "^4.23.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -23,5 +33,9 @@
     "eslint": "^9.17.0",
     "eslint-config-next": "^16.2.10",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "postcss": "8.5.25",
+    "sharp": "$sharp"
   }
 }

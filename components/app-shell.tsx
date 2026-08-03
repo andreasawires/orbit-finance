@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BarChart3,
   CircleDollarSign,
+  FileUp,
   Landmark,
   LayoutDashboard,
   Menu,
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/accounts", label: "Accounts", icon: Landmark },
   { href: "/transactions", label: "Transactions", icon: ReceiptText },
+  { href: "/imports", label: "Imports", icon: FileUp },
   { href: "/cost-centers", label: "Cost centers", icon: CircleDollarSign },
   { href: "/reports", label: "Reports", icon: BarChart3 },
 ];

@@ -1,21 +1,183 @@
+x-app-build: &app-build
+  image: orbit-finance-app:local
+  # pdf-inspector currently publishes a Linux x64 native binary, not Linux arm64.
+  platform: ${APP_PLATFORM:-linux/amd64}
+  build:
+    context: .
+    target: runtime
+
+x-app-environment: &app-environment
+  DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://orbit:orbit@database:5432/orbit_finance}
+  IMPORT_STORAGE_PATH: /app/data/imports
+  IMPORT_MAX_PDF_MB: ${IMPORT_MAX_PDF_MB:-25}
+  IMPORT_MAX_PDF_PAGES: ${IMPORT_MAX_PDF_PAGES:-50}
+  IMPORT_MAX_CSV_MB: ${IMPORT_MAX_CSV_MB:-10}
+  IMPORT_MAX_CSV_ROWS: ${IMPORT_MAX_CSV_ROWS:-50000}
+  IMPORT_MAX_CSV_COLUMNS: ${IMPORT_MAX_CSV_COLUMNS:-100}
+  IMPORT_MAX_IMAGE_MB: ${IMPORT_MAX_IMAGE_MB:-10}
+  IMPORT_MAX_IMAGE_MEGAPIXELS: ${IMPORT_MAX_IMAGE_MEGAPIXELS:-20}
+  IMPORT_MAX_RENDERED_MEGAPIXELS: ${IMPORT_MAX_RENDERED_MEGAPIXELS:-4}
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+  VISION_MODEL: ${VISION_MODEL:-qwen3-vl:4b-instruct}
+  VISION_CONTEXT_SIZE: ${VISION_CONTEXT_SIZE:-8192}
+  VISION_MAX_INPUT_CHARS: ${VISION_MAX_INPUT_CHARS:-24000}
+  VISION_TIMEOUT_MS: ${VISION_TIMEOUT_MS:-120000}
+
 services:
   database:
-    image: postgres:17
+    image: postgres:17-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-orbit_finance}
       POSTGRES_USER: ${POSTGRES_USER:-orbit}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbit}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - orbit-postgres-data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orbit} -d ${POSTGRES_DB:-orbit_finance}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 5s
+
+  migrate:
+    <<: *app-build
+    command: ["npm", "run", "db:migrate"]
+    init: true
+    restart: "no"
+    environment:
+      <<: *app-environment
+    depends_on:
+      database:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  web:
+    <<: *app-build
+    command: ["npm", "run", "start:docker"]
+    init: true
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    volumes:
+      - orbit-import-data:/app/data/imports
+    depends_on:
+      database:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  import-worker:
+    <<: *app-build
+    command: ["npm", "run", "worker"]
+    init: true
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      IMPORT_WORKER_CONCURRENCY: ${IMPORT_WORKER_CONCURRENCY:-1}
+    volumes:
+      - orbit-import-data:/app/data/imports
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Fully containerized inference for any Docker host. Native Ollama remains
+  # the better macOS / Apple Silicon default because it can use Metal directly.
+  # Activate one Ollama profile at a time; each initialises the configured
+  # model in the persistent volume on its first start.
+  ollama-cpu:
+    profiles: ["ollama-cpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+      args:
+        OLLAMA_IMAGE: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    image: orbit-finance-ollama:local
+    restart: unless-stopped
+    environment:
+      VISION_MODEL: ${VISION_MODEL:-qwen3-vl:4b-instruct}
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - orbit-ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show \"$$VISION_MODEL\" >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Linux hosts with the NVIDIA Container Toolkit can opt into GPU inference.
+  ollama-gpu:
+    profiles: ["ollama-gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+      args:
+        OLLAMA_IMAGE: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    image: orbit-finance-ollama:local
+    restart: unless-stopped
+    environment:
+      VISION_MODEL: ${VISION_MODEL:-qwen3-vl:4b-instruct}
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - orbit-ollama-data:/root/.ollama
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama show \"$$VISION_MODEL\" >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   orbit-postgres-data:
+  orbit-import-data:
+  orbit-ollama-data:

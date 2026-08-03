@@ -1,42 +1,21 @@
 import "server-only";
-import { Pool } from "pg";
 import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction } from "@/lib/data";
+import { db } from "@/lib/database";
+import { IMPORT_STORAGE_ADVISORY_LOCK } from "@/lib/imports/locks";
+import { clearImportStorage } from "@/lib/imports/storage";
 
-const globalForDb = globalThis as unknown as { orbitPool?: Pool; orbitSchema?: Promise<void> };
-
-export const db = globalForDb.orbitPool ?? new Pool({
-  connectionString: process.env.DATABASE_URL ?? "postgresql://orbit:orbit@localhost:5433/orbit_finance",
-  max: 10,
-});
-
-if (process.env.NODE_ENV !== "production") globalForDb.orbitPool = db;
+const globalForDb = globalThis as unknown as { orbitSchema?: Promise<void> };
 
 type Row = Record<string, unknown>;
 
 async function ensureDatabaseSchema() {
   globalForDb.orbitSchema ??= (async () => {
-    // Accounts created before ledger balances existed stored a mutable
-    // `balance`. Preserve that value as their opening balance once.
-    await db.query("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS opening_balance numeric(16, 2)");
-    await db.query("UPDATE accounts SET opening_balance = balance WHERE opening_balance IS NULL");
-    await db.query("ALTER TABLE accounts ALTER COLUMN opening_balance SET DEFAULT 0");
-    await db.query("ALTER TABLE accounts ALTER COLUMN opening_balance SET NOT NULL");
-    await db.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_id uuid");
-    await db.query("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_account_id uuid REFERENCES accounts(id) ON DELETE CASCADE");
-    await db.query("CREATE INDEX IF NOT EXISTS transactions_transfer_id_idx ON transactions (transfer_id)");
-    await db.query(`CREATE TABLE IF NOT EXISTS currencies (
-      code varchar(3) PRIMARY KEY CHECK (code = upper(code)),
-      name text NOT NULL,
-      symbol varchar(8) NOT NULL DEFAULT '',
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-    await db.query("INSERT INTO currencies (code, name, symbol) VALUES ('USD', 'US Dollar', '$') ON CONFLICT (code) DO NOTHING");
-    await db.query(`INSERT INTO currencies (code, name)
-      SELECT DISTINCT currency, currency FROM accounts
-      ON CONFLICT (code) DO NOTHING`);
-    await db.query(`INSERT INTO currencies (code, name)
-      SELECT currency, currency FROM preferences WHERE id = 1
-      ON CONFLICT (code) DO NOTHING`);
+    const result = await db.query<{ accounts: string | null; migrations: string | null }>(
+      "SELECT to_regclass('public.accounts')::text AS accounts, to_regclass('public.schema_migrations')::text AS migrations",
+    );
+    if (!result.rows[0]?.accounts || !result.rows[0]?.migrations) {
+      throw new Error("Database schema is not migrated. Run `npm run db:migrate` first.");
+    }
   })();
   await globalForDb.orbitSchema;
 }
@@ -290,5 +269,18 @@ export async function savePreferences(input: Preferences) {
 
 export async function deleteAllData() {
   await ensureDatabaseSchema();
-  await db.query("TRUNCATE transactions, cost_centers, accounts RESTART IDENTITY CASCADE");
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [IMPORT_STORAGE_ADVISORY_LOCK]);
+    await client.query("TRUNCATE import_documents, transactions, cost_centers, accounts RESTART IDENTITY CASCADE");
+    // Keep the database rollback-capable until private originals are gone.
+    await clearImportStorage();
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
