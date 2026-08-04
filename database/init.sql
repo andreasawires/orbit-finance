@@ -65,3 +65,21 @@ CREATE INDEX IF NOT EXISTS transactions_occurred_on_idx ON transactions (occurre
 CREATE INDEX IF NOT EXISTS transactions_account_id_idx ON transactions (account_id);
 CREATE INDEX IF NOT EXISTS transactions_cost_center_id_idx ON transactions (cost_center_id);
 CREATE INDEX IF NOT EXISTS transactions_transfer_id_idx ON transactions (transfer_id);
+
+CREATE OR REPLACE FUNCTION prevent_account_currency_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.currency IS DISTINCT FROM OLD.currency THEN
+    RAISE EXCEPTION 'Account currency is locked. Create a new account to use another currency.';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS accounts_currency_immutable ON accounts;
+CREATE TRIGGER accounts_currency_immutable
+  BEFORE UPDATE OF currency ON accounts
+  FOR EACH ROW
+  EXECUTE FUNCTION prevent_account_currency_change();

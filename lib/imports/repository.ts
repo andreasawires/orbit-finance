@@ -695,6 +695,11 @@ export async function importBatchHasFingerprint(batchId: string, itemId: string,
   return !!result.rowCount;
 }
 
+export async function costCenterExists(id: string) {
+  const result = await db.query("SELECT 1 FROM cost_centers WHERE id = $1", [id]);
+  return !!result.rowCount;
+}
+
 export async function updateImportItemReview(
   batchId: string,
   itemId: string,

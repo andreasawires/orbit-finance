@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { transactionCandidateSchema } from "@/lib/imports/contracts";
+import { reviewTransactionCandidateSchema } from "@/lib/imports/contracts";
 import { presentImportItem } from "@/lib/imports/presentation";
 import {
+  costCenterExists,
   findImportedFingerprints,
   getImportWork,
   importBatchHasFingerprint,
@@ -46,7 +47,7 @@ export async function PATCH(request: NextRequest, context: Context) {
         reviewRevision: updated.reviewRevision,
       });
     } else {
-      const candidate = transactionCandidateSchema.safeParse(parsed.data.candidate);
+      const candidate = reviewTransactionCandidateSchema.safeParse(parsed.data.candidate);
       if (!candidate.success) {
         return NextResponse.json({
           error: candidate.error.issues.map((issue) => issue.message).join(" "),
@@ -55,6 +56,9 @@ export async function PATCH(request: NextRequest, context: Context) {
       const errors = validateCandidate(candidate.data, work.account.currency);
       if (errors.length) {
         return NextResponse.json({ error: errors.join(" ") }, { status: 422 });
+      }
+      if (candidate.data.costCenterId && !(await costCenterExists(candidate.data.costCenterId))) {
+        return NextResponse.json({ error: "The selected cost center no longer exists." }, { status: 422 });
       }
       const fingerprint = createHash("sha256")
         .update(candidateFingerprint(work.account.id, candidate.data))
@@ -73,6 +77,7 @@ export async function PATCH(request: NextRequest, context: Context) {
         amount: candidate.data.amount,
         currency: candidate.data.currency,
         transactionType: candidate.data.type,
+        ...(candidate.data.costCenterId !== undefined ? { costCenterId: candidate.data.costCenterId } : {}),
         confidence: String(Math.round(candidate.data.confidence * 10_000) / 10_000),
         deduplicationFingerprint: fingerprint,
         validationStatus: duplicateWarning.length ? "needs_review" : "valid",

@@ -1,4 +1,5 @@
 import "server-only";
+import { lockedAccountCurrency } from "@/lib/account-currency";
 import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction } from "@/lib/data";
 import { db } from "@/lib/database";
 import { IMPORT_STORAGE_ADVISORY_LOCK } from "@/lib/imports/locks";
@@ -56,7 +57,7 @@ const transactionFromRow = (row: Row): Transaction => {
     account: String(row.account_name), accountId: String(row.account_id),
     transferId: row.transfer_id ? String(row.transfer_id) : null,
     transferAccountId: row.transfer_account_id ? String(row.transfer_account_id) : null,
-    amount: Number(row.amount), type: row.type as Transaction["type"],
+    amount: Number(row.amount), currency: String(row.transaction_currency), type: row.type as Transaction["type"],
     icon: merchant.trim().charAt(0).toUpperCase() || "$",
   };
 };
@@ -88,7 +89,7 @@ export async function getFinanceData(): Promise<FinanceData> {
         SELECT account_id, SUM(amount) AS amount FROM transactions GROUP BY account_id
       ) AS transaction_totals ON transaction_totals.account_id = a.id
       ORDER BY a.created_at, a.name`),
-    db.query(`SELECT t.*, a.name AS account_name, c.name AS cost_center
+    db.query(`SELECT t.*, a.name AS account_name, a.currency AS transaction_currency, c.name AS cost_center
       FROM transactions t JOIN accounts a ON a.id = t.account_id
       LEFT JOIN cost_centers c ON c.id = t.cost_center_id
       ORDER BY t.occurred_on DESC, t.created_at DESC`),
@@ -120,15 +121,12 @@ export async function createCurrency(input: Record<string, unknown>) {
 export async function updateCurrency(previousCode: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
   const currency = currencyInput(input);
+  if (currency.code !== previousCode) throw new Error("Currency ISO codes are locked after creation.");
   const client = await db.connect();
   try {
     await client.query("BEGIN");
     const updated = await client.query("UPDATE currencies SET code=$1, name=$2, symbol=$3 WHERE code=$4", [currency.code, currency.name, currency.symbol, previousCode]);
     if (!updated.rowCount) throw new Error("Currency not found.");
-    if (currency.code !== previousCode) {
-      await client.query("UPDATE accounts SET currency=$1, updated_at=now() WHERE currency=$2", [currency.code, previousCode]);
-      await client.query("UPDATE preferences SET currency=$1, updated_at=now() WHERE currency=$2", [currency.code, previousCode]);
-    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -155,8 +153,11 @@ export async function createAccount(input: Record<string, unknown>) {
 
 export async function updateAccount(id: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
+  const existing = await db.query<{ currency: string }>("SELECT currency FROM accounts WHERE id=$1", [id]);
+  if (!existing.rowCount) throw new Error("Account not found.");
+  const accountCurrency = lockedAccountCurrency(existing.rows[0].currency, input.currency);
   await db.query(`UPDATE accounts SET name=$1, institution=$2, opening_balance=$3, currency=$4, color=$5, kind=$6, updated_at=now() WHERE id=$7`,
-    [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), input.currency ?? "USD", input.color ?? "#573cf0", input.kind ?? "Checking", id]);
+    [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), accountCurrency, input.color ?? "#573cf0", input.kind ?? "Checking", id]);
 }
 
 export async function createTransaction(input: Record<string, unknown>) {

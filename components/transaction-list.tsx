@@ -3,7 +3,7 @@
 import { ArrowDownLeft, ArrowUpRight, MoreHorizontal } from "lucide-react";
 import { formatMoney, Transaction } from "@/lib/data";
 
-export function TransactionList({ items, onSelect, compact = false }: { items: Transaction[]; onSelect?: (item: Transaction) => void; compact?: boolean }) {
+export function TransactionList({ items, onSelect, compact = false, locale = "en-US" }: { items: Transaction[]; onSelect?: (item: Transaction) => void; compact?: boolean; locale?: string }) {
   return (
     <div className={`transaction-table ${compact ? "compact" : ""}`}>
       <div className="transaction-row table-header"><span>Transaction</span><span>Date</span><span>Cost center</span><span>Account</span><span>Amount</span><span /></div>
@@ -13,7 +13,7 @@ export function TransactionList({ items, onSelect, compact = false }: { items: T
           <span className="date-cell">{item.date}</span>
           <span><i className="center-dot" />{item.costCenter}</span>
           <span>{item.account}</span>
-          <strong className={`amount ${item.amount > 0 ? "positive" : ""}`}>{item.amount > 0 && item.type === "Income" ? "+" : ""}{formatMoney(item.amount)}</strong>
+          <strong className={`amount ${item.amount > 0 ? "positive" : ""}`}>{item.amount > 0 && item.type === "Income" ? "+" : ""}{formatMoney(item.amount, item.currency, locale)}</strong>
           <span className="row-actions">{item.type === "Income" ? <ArrowDownLeft size={15} /> : item.type === "Transfer" ? <ArrowUpRight size={15} /> : <MoreHorizontal size={17} />}</span>
         </button>
       ))}

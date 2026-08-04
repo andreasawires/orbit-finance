@@ -4,7 +4,7 @@ import { mkdir, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { importConfig } from "@/lib/imports/config";
-import { modelTransactionsSchema, transactionCandidateSchema, type TransactionCandidate } from "@/lib/imports/contracts";
+import { modelTransactionsSchema, reviewTransactionCandidateSchema, transactionCandidateSchema, type TransactionCandidate } from "@/lib/imports/contracts";
 import { extractImport } from "@/lib/imports/extract";
 import { detectFile } from "@/lib/imports/file-types";
 import { ollamaGenerationSchema } from "@/lib/imports/ollama-schema";
@@ -26,6 +26,12 @@ test("ledger amount contract accepts numeric(16,2) and rejects wider values", ()
   assert.equal(transactionCandidateSchema.safeParse(candidate({ amount: "-100000000000000.00" })).success, false);
   assert.equal(transactionCandidateSchema.safeParse(candidate({ amount: "-1.001" })).success, false);
   assert.equal(transactionCandidateSchema.safeParse(candidate({ amount: "+1.00" })).success, false);
+});
+
+test("review candidates accept an optional cost center id", () => {
+  assert.equal(reviewTransactionCandidateSchema.safeParse({ ...candidate(), costCenterId: randomUUID() }).success, true);
+  assert.equal(reviewTransactionCandidateSchema.safeParse({ ...candidate(), costCenterId: null }).success, true);
+  assert.equal(reviewTransactionCandidateSchema.safeParse({ ...candidate(), costCenterId: "not-a-uuid" }).success, false);
 });
 
 test("Ollama receives a structural schema while Zod retains semantic validation", () => {

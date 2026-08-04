@@ -94,6 +94,7 @@ export function presentImportItem(
       amount: item.amount,
       currency: item.currency,
       type: item.transactionType,
+      costCenterId: item.costCenterId,
       confidence: item.confidence == null ? null : Number(item.confidence),
     },
     validationStatus: item.validationStatus,

@@ -42,12 +42,12 @@ export function AccountForm({ account, currencies = [] }: { account?: Account | 
     <label>Institution<input name="institution" defaultValue={account?.institution} placeholder="Bank or institution" /></label>
     <label>Account type<select name="kind" defaultValue={account?.kind ?? "Checking"}><option>Checking</option><option>Savings</option><option>Credit card</option><option>Investment</option></select></label>
     <label>Opening balance<input name={account ? "openingBalance" : "startingBalance"} defaultValue={account?.openingBalance} type="number" step="0.01" placeholder="0.00" required /></label>
-    <label>Currency<select name="currency" defaultValue={account?.currency ?? currencies[0]?.code ?? "USD"} required>{currencies.length ? currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.name}</option>) : <option value="USD">USD</option>}</select></label>
+    {account ? <label>Currency<span className="locked-currency"><strong>{account.currency}</strong><small>Locked after creation. Create a new account to use another currency.</small></span></label> : <label>Currency<select name="currency" defaultValue={currencies[0]?.code ?? "USD"} required>{currencies.length ? currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.name}</option>) : <option value="USD">USD</option>}</select></label>}
     <fieldset className="full color-field"><legend>Account color</legend><div className="color-options">{["#573cf0", "#0e8a69", "#db6e30", "#267baf", "#d94e6b"].map((c, i) => <label key={c}><input type="radio" name="color" value={c} defaultChecked={account ? account.color === c : !i} /><span style={{ background: c }}>{(!account && !i) || account?.color === c ? <Check size={14} /> : null}</span></label>)}</div></fieldset>
   </div>;
 }
 
-export function TransactionForm({ accounts, costCenters, currencies, transactions = [], transaction, onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transactions?: Transaction[]; transaction?: Transaction | null; onTransferLinkModeChange?: (active: boolean) => void }) {
+export function TransactionForm({ accounts, costCenters, currencies, transactions = [], transaction, locale = "en-US", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transactions?: Transaction[]; transaction?: Transaction | null; locale?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
   const [type, setType] = useState<Transaction["type"]>(transaction?.type ?? "Expense");
   const initialSourceAccountId = transaction?.type === "Transfer" && transaction.amount > 0 ? transaction.transferAccountId ?? "" : transaction?.accountId ?? accounts[0]?.id ?? "";
   const initialDestinationAccountId = transaction?.type === "Transfer" && transaction.amount < 0 ? transaction.transferAccountId ?? "" : transaction?.type === "Transfer" ? transaction?.accountId ?? "" : accounts.find((account) => account.id !== initialSourceAccountId)?.id ?? "";
@@ -60,7 +60,7 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
   const currencyLabel = account ? `${currency?.symbol ? `${currency.symbol} ` : ""}${account.currency}` : "Select an account";
   const canReconcile = !!transaction && !transaction.transferId && (transaction.type === "Income" || transaction.type === "Expense");
   const isReconciliation = isTransfer && canReconcile;
-  const transactionCurrency = accounts.find((item) => item.id === transaction?.accountId)?.currency ?? "USD";
+  const transactionCurrency = transaction?.currency ?? accounts.find((item) => item.id === transaction?.accountId)?.currency ?? "USD";
   const linkedAccounts = accounts.filter((item) => item.id !== transaction?.accountId && item.currency === transactionCurrency);
   const [otherAccountId, setOtherAccountId] = useState("");
   const candidates = isReconciliation ? transactions.filter((item) =>
@@ -73,9 +73,9 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
     <div className="full segmented-input">{(["Expense", "Income", "Transfer"] as const).map((value) => <button type="button" className={type === value ? "active" : ""} key={value} onClick={() => { setType(value); onTransferLinkModeChange?.(value === "Transfer" && canReconcile); }}>{value}</button>)}</div>
     {isReconciliation ? <>
       <input type="hidden" name="linkExistingTransfer" value="true" />
-      <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency)} · {transaction.date}</span></div>
+      <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency, locale)} · {transaction.date}</span></div>
       <label className="full">Other account<select value={otherAccountId} onChange={(event) => setOtherAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{linkedAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-      {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.merchant} · {formatMoney(item.amount, transactionCurrency)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
+      {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
     </> : <>
       <label className="full">Description<input name="description" defaultValue={transaction?.merchant} placeholder="What was this for?" required /></label>
       <label><span className="amount-label">Amount<small>{currencyLabel}</small></span><input name="amount" defaultValue={transaction ? Math.abs(transaction.amount) : undefined} type="number" min="0" step="0.01" placeholder="0.00" required /></label>

@@ -3,6 +3,8 @@
 import { CreditCard, Landmark, MoreHorizontal, Plus, Search, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AccountForm, Modal } from "@/components/modal";
+import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
+import { groupCurrencyAmounts } from "@/lib/currency-summary";
 import { formatMoney, type Account } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
 
@@ -15,18 +17,20 @@ export default function AccountsPage() {
   const [selected, setSelected] = useState<Account | null>(null);
   const filtered = accounts.filter((a) => `${a.name} ${a.institution}`.toLowerCase().includes(query.toLowerCase()));
   const summary = useMemo(() => ({
-    net: accounts.reduce((sum, a) => sum + a.balance, 0),
-    cash: accounts.filter((a) => a.balance >= 0).reduce((sum, a) => sum + a.balance, 0),
-    credit: Math.abs(accounts.filter((a) => a.balance < 0).reduce((sum, a) => sum + a.balance, 0)),
-  }), [accounts]);
-  const money = (amount: number) => formatMoney(amount, preferences.currency, preferences.locale);
+    net: groupCurrencyAmounts(accounts.map((account) => ({ currency: account.currency, amount: account.balance })), preferences.currency),
+    cash: groupCurrencyAmounts(accounts.filter((account) => account.balance >= 0).map((account) => ({ currency: account.currency, amount: account.balance })), preferences.currency),
+    credit: groupCurrencyAmounts(accounts.filter((account) => account.balance < 0).map((account) => ({ currency: account.currency, amount: Math.abs(account.balance) })), preferences.currency),
+  }), [accounts, preferences.currency]);
+  const presentationValues = useMemo(() => [...summary.net, ...summary.cash, ...summary.credit], [summary]);
+  const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
   return <div className="page">
     <div className="page-heading"><div><div className="eyebrow">Money map</div><h1>Accounts</h1><p>Balances are calculated from opening balances and transactions.</p></div><button className="button primary" onClick={() => setModal(true)}><Plus size={17} /> New account</button></div>
     {error && <div className="data-error"><strong>Could not connect to PostgreSQL.</strong><span>{error}</span><code>docker compose up -d</code></div>}
+    {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
     <div className="account-summary panel">
-      <div><span className="summary-orb"><WalletCards size={21} /></span><div><small>Total net balance</small><strong>{money(summary.net)}</strong></div></div>
-      <div className="summary-metric"><small>Cash available</small><strong>{money(summary.cash)}</strong></div>
-      <div className="summary-metric"><small>Credit used</small><strong>{money(summary.credit)}</strong></div>
+      <div><span className="summary-orb"><WalletCards size={21} /></span><div><small>Total net balance</small><strong><CurrencyAmounts values={summary.net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong></div></div>
+      <div className="summary-metric"><small>Cash available</small><strong><CurrencyAmounts values={summary.cash} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong></div>
+      <div className="summary-metric"><small>Credit used</small><strong><CurrencyAmounts values={summary.credit} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong></div>
       <div className="summary-metric"><small>Accounts</small><strong>{accounts.length}</strong><span>{new Set(accounts.map((a) => a.institution).filter(Boolean)).size} institutions</span></div>
     </div>
     <div className="list-toolbar"><div className="toolbar-search"><Search size={17} /><input placeholder="Search accounts..." value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="account-view-label">{filtered.length} accounts</div></div>

@@ -29,6 +29,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
+import { flattenCostCenters, type CostCenter } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
 
 type UnknownRecord = Record<string, unknown>;
@@ -127,6 +128,7 @@ type CandidateDraft = {
   amount: string;
   currency: string;
   type: "Income" | "Expense";
+  costCenterId: string;
 };
 
 const MIB = 1024 * 1024;
@@ -425,6 +427,7 @@ function candidateDraft(candidate: TransactionCandidate): CandidateDraft {
     amount: candidate.amount || "",
     currency: candidate.currency || "",
     type: candidate.type === "Income" ? "Income" : "Expense",
+    costCenterId: typeof candidate.costCenterId === "string" ? candidate.costCenterId : "",
   };
 }
 
@@ -437,6 +440,7 @@ function candidatePayload(original: TransactionCandidate, draft: CandidateDraft)
     amount: draft.amount.trim(),
     currency: draft.currency.trim().toUpperCase(),
     type: draft.type,
+    costCenterId: draft.costCenterId || null,
   };
 }
 
@@ -454,11 +458,13 @@ function StatusPill({ status }: { status: string }) {
 function CandidateEditor({
   item,
   originalUrl,
+  costCenters,
   disabled,
   onAction,
 }: {
   item: ImportItem;
   originalUrl: string;
+  costCenters: Array<CostCenter & { path: string }>;
   disabled: boolean;
   onAction: (reviewStatus: string, candidate: TransactionCandidate) => Promise<void>;
 }) {
@@ -513,6 +519,7 @@ function CandidateEditor({
       <label><span>Amount</span><input inputMode="decimal" value={draft.amount} onChange={(event) => update("amount", event.target.value)} placeholder="-42.50" pattern="-?(?:0|[1-9][0-9]{0,13})(?:\.[0-9]{1,2})?" disabled={disabled} /></label>
       <label><span>Currency</span><input value={draft.currency} onChange={(event) => update("currency", event.target.value.slice(0, 3))} placeholder="EUR" maxLength={3} disabled={disabled} /></label>
       <label><span>Type</span><select value={draft.type} onChange={(event) => update("type", event.target.value)} disabled={disabled}><option value="Expense">Expense</option><option value="Income">Income</option></select></label>
+      <label className="cost-center"><span>Cost center</span><select value={draft.costCenterId} onChange={(event) => update("costCenterId", event.target.value)} disabled={disabled}><option value="">Uncategorized</option>{costCenters.map((center) => <option key={center.id} value={center.id}>{center.path}</option>)}</select></label>
       <label className="note"><span>Note</span><input value={draft.note} onChange={(event) => update("note", event.target.value)} placeholder="Optional note" disabled={disabled} /></label>
     </div>
 
@@ -562,6 +569,7 @@ function BatchDetail({
   actionError,
   busyItemIds,
   approving,
+  costCenters,
   onItemAction,
   onApproveBatch,
   onPageChange,
@@ -572,6 +580,7 @@ function BatchDetail({
   actionError: string;
   busyItemIds: Set<string>;
   approving: boolean;
+  costCenters: Array<CostCenter & { path: string }>;
   onItemAction: (itemId: string, reviewStatus: string, candidate: TransactionCandidate) => Promise<void>;
   onApproveBatch: () => Promise<void>;
   onPageChange: (page: number) => void;
@@ -619,7 +628,7 @@ function BatchDetail({
 
       {total > 0 ? <div className="import-candidates">
         <div className="import-candidates-heading"><div><h3>{completed ? "Imported transactions" : "Review candidates"}</h3><p>{completed ? "These candidates were committed to your ledger with their source provenance." : "Check every value against its source, then approve or reject it."}</p></div>{document?.sha256 && <span title={document.sha256}>SHA-256 · {document.sha256.slice(0, 10)}…</span>}</div>
-        {items.map((item) => <CandidateEditor key={item.id} item={item} originalUrl={document?.originalUrl || ""} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}
+        {items.map((item) => <CandidateEditor key={item.id} item={item} originalUrl={document?.originalUrl || ""} costCenters={costCenters} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}
         {pagination.totalPages > 1 && <nav className="import-pagination" aria-label="Candidate pages">
           <span>Showing {(pagination.page - 1) * pagination.pageSize + 1}–{Math.min(pagination.page * pagination.pageSize, pagination.total)} of {pagination.total}</span>
           <div><button className="button secondary small" disabled={loading || pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}><ChevronLeft size={15} /> Previous</button><strong>Page {pagination.page} of {pagination.totalPages}</strong><button className="button secondary small" disabled={loading || pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next <ChevronRight size={15} /></button></div>
@@ -639,7 +648,7 @@ function BatchDetail({
 }
 
 export function ImportsWorkspace() {
-  const { accounts, loading: accountsLoading, error: financeError, reload: reloadFinance } = useFinanceData();
+  const { accounts, costCenters, loading: accountsLoading, error: financeError, reload: reloadFinance } = useFinanceData();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [accountId, setAccountId] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -659,6 +668,7 @@ export function ImportsWorkspace() {
   const [approving, setApproving] = useState(false);
   const selectedAccountId = accountId && accounts.some((account) => account.id === accountId) ? accountId : accounts[0]?.id || "";
   const activeAccount = useMemo(() => accounts.find((account) => account.id === selectedAccountId), [accounts, selectedAccountId]);
+  const importCostCenters = useMemo(() => flattenCostCenters(costCenters), [costCenters]);
 
   const loadBatches = useCallback(async () => {
     setListLoading(true);
@@ -924,7 +934,7 @@ export function ImportsWorkspace() {
 
     <div className="imports-layout">
       <BatchList batches={batches} selectedId={selectedId} loading={listLoading} onSelect={selectBatch} onRefresh={() => { void loadBatches(); if (selectedId) void refreshDetail(selectedId); }} />
-      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} />
+      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} />
     </div>
   </div>;
 }

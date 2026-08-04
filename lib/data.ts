@@ -23,6 +23,7 @@ export type Transaction = {
   transferId: string | null;
   transferAccountId: string | null;
   amount: number;
+  currency: string;
   type: "Income" | "Expense" | "Transfer";
   icon: string;
 };
@@ -73,3 +74,6 @@ export const flattenCostCenters = (centers: CostCenter[], prefix = ""): Array<Co
     const path = prefix ? `${prefix} › ${center.name}` : center.name;
     return [{ ...center, path }, ...flattenCostCenters(center.children, path)];
   });
+
+export const costCenterTotal = (center: CostCenter): number =>
+  center.amount + center.children.reduce((total, child) => total + costCenterTotal(child), 0);

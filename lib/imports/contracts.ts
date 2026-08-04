@@ -17,6 +17,10 @@ export const transactionCandidateSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 
+export const reviewTransactionCandidateSchema = transactionCandidateSchema.extend({
+  costCenterId: z.string().uuid().nullable().optional(),
+});
+
 export const modelTransactionSchema = transactionCandidateSchema.extend({
   sourceEvidence: z.string().max(1_000).default(""),
 });
