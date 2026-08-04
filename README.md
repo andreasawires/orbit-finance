@@ -26,7 +26,7 @@ ollama pull qwen3-vl:4b-instruct
 docker compose up -d --build
 ```
 
-Open [http://localhost:3000/imports](http://localhost:3000/imports). PostgreSQL and the app bind only to loopback. Ollama runs natively on the Mac; the worker reaches it at `host.docker.internal:11434`.
+Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. The web UI binds to all network interfaces by default; set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep it on this machine only. PostgreSQL and Ollama remain bound to loopback. Ollama runs natively on the Mac; the worker reaches it at `host.docker.internal:11434`.
 
 `pdf-inspector` currently publishes a Linux x64 native binary but not a Linux ARM64 one, so the app containers default to `linux/amd64` on Apple Silicon. The model remains native and does the expensive inference work outside Docker.
 
@@ -65,6 +65,8 @@ Run the worker in another terminal:
 ```bash
 npm run worker
 ```
+
+The development server listens on all interfaces, so it is also available at `http://<your-computer-lan-ip>:3000`. If you use a host firewall, allow inbound TCP port 3000 only from your local network.
 
 For this mode, `OLLAMA_BASE_URL=http://127.0.0.1:11434`. The default database connection is `postgresql://orbit:orbit@localhost:5433/orbit_finance`.
 
