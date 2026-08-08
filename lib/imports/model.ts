@@ -18,7 +18,7 @@ Return only data matching the supplied JSON schema.
 Rules:
 - Include only real ledger transactions. Omit headers, opening/closing balances, subtotals, totals, page numbers, and advertisements.
 - Use ISO dates YYYY-MM-DD. Do not invent a year that cannot be inferred from the source.
-- Amount is a decimal string using a dot. Expenses/debits must be negative; income/credits must be positive.
+- Amount must be a JSON string in this exact canonical form: -42.50, 0, or 1250. Never use a currency symbol or code, a plus sign, thousands separators, spaces, parentheses, or a comma decimal separator. Use at most two digits after the dot. Expenses/debits must be negative; income/credits must be positive.
 - The type must agree with the sign: negative is Expense, positive is Income.
 - Preserve the transaction currency. Use the account currency only when the source has no conflicting currency.
 - Preserve the source description without translating it. A short cleanup is allowed, but do not add facts.
@@ -77,7 +77,7 @@ async function requestStructured<T>(input: {
   system: string;
   prompt: string;
   images?: string[];
-  strictRetry: boolean;
+  retryFeedback?: string;
 }) {
   if (input.prompt.length > importConfig.maxModelInputChars) {
     throw new Error(`Local model prompt exceeds the configured ${importConfig.maxModelInputChars.toLocaleString()} character limit.`);
@@ -92,7 +92,11 @@ async function requestStructured<T>(input: {
       format: ollamaGenerationSchema(input.schema),
       messages: [
         { role: "system", content: input.system },
-        { role: "user", content: `${input.strictRetry ? "Your previous response failed validation. Follow the schema exactly.\n\n" : ""}${input.prompt}`, ...(input.images ? { images: input.images } : {}) },
+        {
+          role: "user",
+          content: `${input.retryFeedback ? `Your previous response failed validation. Correct every listed field and return the complete JSON response again.\n${input.retryFeedback}\n\n` : ""}${input.prompt}`,
+          ...(input.images ? { images: input.images } : {}),
+        },
       ],
       options: { temperature: 0, num_ctx: importConfig.modelContext },
     }),
@@ -106,14 +110,27 @@ async function requestStructured<T>(input: {
   return input.schema.parse(JSON.parse(payload.message.content));
 }
 
-async function requestModel(request: ConvertRequest, strictRetry: boolean) {
+function modelValidationFeedback(error: unknown, includeAmountGuidance = false): string {
+  if (!(error instanceof z.ZodError)) return "Follow the supplied JSON schema exactly.";
+  const issues = error.issues.slice(0, 20).map((issue) => {
+    const path = issue.path.length ? issue.path.join(".") : "response";
+    return `- ${path}: ${issue.message}`;
+  });
+  const details = issues.join("\n").slice(0, 800);
+  const amountGuidance = includeAmountGuidance
+    ? "\nFor every amount, return a quoted plain decimal such as \"-42.50\" or \"1250\"; do not include a currency symbol, commas, spaces, or a plus sign."
+    : "";
+  return `${details}${amountGuidance}`;
+}
+
+async function requestModel(request: ConvertRequest, retryFeedback?: string) {
   const images = request.imagePath ? [(await readFile(request.imagePath)).toString("base64")] : undefined;
   const prompt = `Source: ${request.sourceLabel}
 Default account currency: ${request.accountCurrency}
 ${request.statementContext ? `Statement context from the first page (context only; do not extract rows from it):\n${request.statementContext}\n` : ""}
 
 ${request.content}`;
-  return requestStructured({ schema: modelTransactionsSchema, system: systemPrompt, prompt, images, strictRetry });
+  return requestStructured({ schema: modelTransactionsSchema, system: systemPrompt, prompt, images, retryFeedback });
 }
 
 export async function inferCsvMapping(headers: string[], sampleRows: Record<string, string>[]): Promise<CsvMapping> {
@@ -128,7 +145,7 @@ If debit and credit columns exist, use them and set amountColumn to null.`;
         schema: csvMappingSchema,
         system,
         prompt: `Headers:\n${JSON.stringify(headers)}\n\nSample rows:\n${JSON.stringify(sampleRows.slice(0, 12), null, 2)}`,
-        strictRetry: attempt > 0,
+        retryFeedback: attempt > 0 ? modelValidationFeedback(lastError) : undefined,
       });
     } catch (error) {
       lastError = error;
@@ -162,7 +179,7 @@ export async function convertWithLocalModel(request: ConvertRequest): Promise<{ 
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        result = await requestModel(chunkRequest, attempt > 0);
+        result = await requestModel(chunkRequest, attempt > 0 ? modelValidationFeedback(lastError, true) : undefined);
         break;
       } catch (error) {
         lastError = error;
