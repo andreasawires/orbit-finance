@@ -50,7 +50,16 @@ export type Currency = {
   symbol: string;
 };
 
+export type Workspace = {
+  id: string;
+  name: string;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type FinanceData = {
+  workspace: Workspace | null;
   accounts: Account[];
   transactions: Transaction[];
   costCenters: CostCenter[];
@@ -59,6 +68,7 @@ export type FinanceData = {
 };
 
 export const emptyFinanceData: FinanceData = {
+  workspace: null,
   accounts: [],
   transactions: [],
   costCenters: [],

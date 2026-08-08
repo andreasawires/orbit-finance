@@ -21,6 +21,7 @@ const globalForImportStorage = globalThis as unknown as { orbitImportStorageRead
 const storageMarkerName = ".orbit-import-storage";
 const storageMarkerContents = "orbit-finance-import-storage-v1\n";
 const storedFilename = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:pdf|csv|png|jpg|webp)$/i;
+const workspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function assertSafeStorageRoot() {
   const root = path.resolve(importConfig.storagePath);
@@ -51,6 +52,7 @@ async function adoptOrVerifyStorageRoot() {
   const entries = await readdir(importConfig.storagePath, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === ".staging" && entry.isDirectory()) continue;
+    if (entry.name === "workspaces" && entry.isDirectory()) continue;
     if (!entry.isDirectory() || !/^[a-f0-9]{2}$/i.test(entry.name)) {
       throw new Error("IMPORT_STORAGE_PATH is non-empty and is not an Orbit import store.");
     }
@@ -67,7 +69,7 @@ async function adoptOrVerifyStorageRoot() {
 }
 
 export function resolveStorageKey(storageKey: string) {
-  if (!/^[a-f0-9-]+\/[a-f0-9-]+\.(?:pdf|csv|png|jpg|webp)$/i.test(storageKey)) {
+  if (!/^(?:[a-f0-9]{2}\/[a-f0-9-]+|workspaces\/[a-f0-9-]+\/[a-f0-9]{2}\/[a-f0-9-]+)\.(?:pdf|csv|png|jpg|webp)$/i.test(storageKey)) {
     throw new Error("Invalid import storage key.");
   }
   const resolved = path.resolve(importConfig.storagePath, storageKey);
@@ -90,10 +92,12 @@ export async function deleteStoredFile(storageKey: string) {
 }
 
 export async function storeUpload(
+  workspace: string,
   body: ReadableStream<Uint8Array>,
   originalFilename: string,
   declaredMime: string | null,
 ): Promise<StoredUpload> {
+  if (!workspaceId.test(workspace)) throw new Error("A valid workspace id is required for import storage.");
   await ensureStorageReady();
   const stagingPath = path.join(stagingDirectory(), `${randomUUID()}.upload`);
   const output = createWriteStream(stagingPath, { flags: "wx", mode: 0o600 });
@@ -130,7 +134,7 @@ export async function storeUpload(
     if (byteSize > detected.maxBytes) throw new Error(`This ${detected.kind} exceeds its ${detected.maxBytes / 1024 / 1024} MiB limit.`);
 
     const documentId = randomUUID();
-    const storageKey = `${documentId.slice(0, 2)}/${documentId}${detected.extension}`;
+    const storageKey = `workspaces/${workspace}/${documentId.slice(0, 2)}/${documentId}${detected.extension}`;
     const finalPath = resolveStorageKey(storageKey);
     await mkdir(path.dirname(finalPath), { recursive: true, mode: 0o700 });
     await rename(stagingPath, finalPath);
@@ -149,7 +153,7 @@ export async function clearImportStorage() {
   if (marker !== storageMarkerContents) throw new Error("Refusing to clear an unowned import storage directory.");
   const entries = await readdir(importConfig.storagePath, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === ".staging" || (entry.isDirectory() && /^[a-f0-9]{2}$/i.test(entry.name))) {
+    if (entry.name === ".staging" || entry.name === "workspaces" || (entry.isDirectory() && /^[a-f0-9]{2}$/i.test(entry.name))) {
       await rm(path.join(importConfig.storagePath, entry.name), { recursive: true, force: true });
     }
   }

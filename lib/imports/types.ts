@@ -43,6 +43,7 @@ export type ImportActorType = "system" | "worker" | "user";
 
 export type ImportDocument = {
   id: string;
+  workspaceId: string;
   sha256: string;
   storageKey: string;
   originalFilename: string;
@@ -69,6 +70,7 @@ export type ImportPipelineProvenance = {
 
 export type ImportBatch = ImportPipelineProvenance & {
   id: string;
+  workspaceId: string;
   documentId: string;
   accountId: string;
   sourceKind: ImportSourceKind;
@@ -87,6 +89,7 @@ export type ImportBatch = ImportPipelineProvenance & {
 
 export type ImportItem = {
   id: string;
+  workspaceId: string;
   batchId: string;
   ordinal: number;
   validationStatus: ImportValidationStatus;
@@ -120,6 +123,7 @@ export type ImportItem = {
 
 export type ImportEvent = {
   id: string;
+  workspaceId: string;
   batchId: string;
   itemId: string | null;
   eventName: string;
@@ -133,6 +137,7 @@ export type ImportEvent = {
 
 export type TransactionSource = {
   id: string;
+  workspaceId: string;
   transactionId: string;
   importItemId: string;
   accountId: string;
@@ -143,6 +148,7 @@ export type TransactionSource = {
 };
 
 export type RegisterImportDocumentInput = {
+  workspaceId: string;
   sha256: string;
   storageKey: string;
   originalFilename: string;
@@ -153,6 +159,7 @@ export type RegisterImportDocumentInput = {
 };
 
 export type CreateImportBatchInput = ImportPipelineProvenance & {
+  workspaceId: string;
   documentId: string;
   accountId: string;
   sourceKind: ImportSourceKind;
@@ -185,6 +192,7 @@ export type ImportItemCandidate = {
 };
 
 export type ApproveImportBatchInput = {
+  workspaceId: string;
   batchId: string;
   /** Batch revision shown on the review screen; prevents stale-tab approval. */
   reviewRevision: string;

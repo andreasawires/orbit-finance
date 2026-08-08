@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useWorkspace } from "@/components/workspace-provider";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -32,6 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const { workspace, workspaces, loading: workspaceLoading, error: workspaceError, selectWorkspace } = useWorkspace();
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
@@ -72,6 +74,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="nav-list">
           <span className="nav-label">Workspace</span>
+          <div className="workspace-switcher">
+            <select aria-label="Active workspace" disabled={workspaceLoading || !workspaces.length} value={workspace?.id ?? ""} onChange={(event) => selectWorkspace(event.target.value)}>
+              {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            <Link href="/settings?tab=workspaces" title="Manage workspaces">Manage</Link>
+          </div>
           {navItems.map(({ href, label, icon: Icon }) => {
             const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
             return <Link key={href} href={href} className={active ? "active" : ""} title={collapsed ? label : undefined} onClick={() => setMobileOpen(false)}><Icon size={19} /><span>{label}</span>{active && <i />}</Link>;
@@ -84,7 +92,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
       {mobileOpen && <button className="sidebar-scrim" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
 
-      <main className="main-content">{children}</main>
+      <main className="main-content" key={workspace?.id ?? "workspace-loading"}>
+        {workspaceLoading ? <div className="page"><div className="empty-state">Loading workspace…</div></div>
+          : workspaceError ? <div className="page"><div className="data-error"><strong>Could not load workspaces.</strong><span>{workspaceError}</span></div></div>
+            : children}
+      </main>
 
       {searchOpen && (
         <div className="modal-backdrop search-backdrop" onMouseDown={() => setSearchOpen(false)}>

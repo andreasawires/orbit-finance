@@ -16,6 +16,7 @@ import {
   updateImportBatchStatus,
 } from "@/lib/imports/repository";
 import { deleteStoredFile, storeUpload, type StoredUpload } from "@/lib/imports/storage";
+import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,12 +47,14 @@ function statusForError(error: unknown) {
 function failure(error: unknown) {
   const message = error instanceof Error ? error.message : "Import request failed.";
   console.error("Import API error", error);
-  return NextResponse.json({ error: message }, { status: statusForError(error) });
+  const workspace = workspaceRequestFailure(error);
+  return NextResponse.json({ error: workspace.status === 503 ? message : workspace.message }, { status: workspace.status === 503 ? statusForError(error) : workspace.status });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const batches = await listImportBatches();
+    const workspace = await requireRequestWorkspace(request);
+    const batches = await listImportBatches(workspace.id);
     return NextResponse.json({
       batches: batches.map(presentImportBatchSummary),
       limits: {
@@ -73,12 +76,13 @@ export async function POST(request: NextRequest) {
   let batchWasRegistered = false;
   let releaseStorageGuard: (() => Promise<void>) | null = null;
   try {
+    const workspace = await requireRequestWorkspace(request);
     releaseStorageGuard = await acquireImportStorageReadLock();
     const accountId = request.headers.get("x-account-id")?.trim() ?? "";
     if (!uuid.test(accountId)) throw new Error("A valid destination account is required.");
     const account = await db.query<{ id: string; name: string; currency: string }>(
-      "SELECT id, name, currency FROM accounts WHERE id = $1",
-      [accountId],
+      "SELECT id, name, currency FROM accounts WHERE workspace_id = $1 AND id = $2",
+      [workspace.id, accountId],
     );
     if (!account.rowCount) throw new Error("The destination account does not exist.");
     const canonicalAccountId = String(account.rows[0].id);
@@ -91,8 +95,9 @@ export async function POST(request: NextRequest) {
     }
 
     const originalFilename = safeFilename(request.headers.get("x-file-name"));
-    stored = await storeUpload(request.body, originalFilename, request.headers.get("content-type"));
+    stored = await storeUpload(workspace.id, request.body, originalFilename, request.headers.get("content-type"));
     const registered = await registerImportDocument({
+      workspaceId: workspace.id,
       sha256: stored.sha256,
       storageKey: stored.storageKey,
       originalFilename,
@@ -105,9 +110,10 @@ export async function POST(request: NextRequest) {
     if (registered.reused) await deleteStoredFile(stored.storageKey);
 
     const idempotencyKey = `document-account:${createHash("sha256")
-      .update(`${registered.document.sha256}:${canonicalAccountId}`)
+      .update(`${workspace.id}:${registered.document.sha256}:${canonicalAccountId}`)
       .digest("hex")}`;
     let batch = await createImportBatch({
+      workspaceId: workspace.id,
       documentId: registered.document.id,
       accountId: canonicalAccountId,
       sourceKind: stored.detected.kind,
@@ -137,15 +143,15 @@ export async function POST(request: NextRequest) {
     }
     if (["uploaded", "failed", "queued"].includes(batch.status)) {
       try {
-        await enqueueImport(batch.id);
-        const latest = await getImportBatch(batch.id);
+        await enqueueImport(batch.id, workspace.id);
+        const latest = await getImportBatch(workspace.id, batch.id);
         if (latest && (latest.status === "uploaded" || latest.status === "failed")) {
           try {
-            batch = await updateImportBatchStatus(batch.id, "queued", {
+            batch = await updateImportBatchStatus(workspace.id, batch.id, "queued", {
               details: { reason: "upload" },
             });
           } catch {
-            batch = await getImportBatch(batch.id) ?? batch;
+          batch = await getImportBatch(workspace.id, batch.id) ?? batch;
           }
         } else if (latest) {
           batch = latest;
@@ -155,15 +161,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const detail = await getImportBatchDetail(batch.id);
+    const detail = await getImportBatchDetail(workspace.id, batch.id);
     if (!detail) throw new Error("The import batch could not be loaded after upload.");
-    const mappings = await listImportTransactionMappings(batch.id, detail.items.map((item) => item.id));
+    const mappings = await listImportTransactionMappings(workspace.id, batch.id, detail.items.map((item) => item.id));
     const response = presentImportDetail(detail, mappings);
     const processing = ["uploaded", "queued", "extracting", "converting", "validating"].includes(detail.batch.status);
     return NextResponse.json(response, { status: processing ? 202 : 200 });
   } catch (error) {
     if (stored && storageWasRegistered && registeredDocumentId && !batchWasRegistered) {
-      const storageKey = await deleteUnreferencedImportDocument(registeredDocumentId).catch(() => null);
+      const workspaceId = request.headers.get("x-orbit-workspace-id")?.trim() ?? "";
+      const storageKey = await deleteUnreferencedImportDocument(workspaceId, registeredDocumentId).catch(() => null);
       if (storageKey) await deleteStoredFile(storageKey).catch(() => undefined);
     } else if (stored && !storageWasRegistered) {
       await deleteStoredFile(stored.storageKey).catch(() => undefined);

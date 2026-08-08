@@ -31,6 +31,7 @@ import {
 } from "react";
 import { flattenCostCenters, type CostCenter } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
+import { useWorkspace } from "@/components/workspace-provider";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -332,8 +333,8 @@ function normalizeLimits(value: unknown): ImportLimits {
   };
 }
 
-async function fetchBatches() {
-  const response = await fetch("/api/imports", { cache: "no-store" });
+async function fetchBatches(workspaceFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
+  const response = await workspaceFetch("/api/imports", { cache: "no-store" });
   const body = await responseBody(response);
   if (!response.ok) throw new Error(errorFromBody(body, "Could not load imports."));
   return {
@@ -389,12 +390,6 @@ function sourceLabel(item: ImportItem) {
   if (item.sourcePage != null) return `Page ${item.sourcePage}`;
   if (item.sourceRow != null) return `Row ${item.sourceRow}`;
   return item.sourceKind === "csv" ? "CSV row" : "Document source";
-}
-
-function sourceUrl(originalUrl: string, sourcePage: number | null) {
-  if (!originalUrl || sourcePage == null) return originalUrl;
-  const base = originalUrl.split("#", 1)[0];
-  return `${base}#page=${sourcePage}`;
 }
 
 function fileKind(filename: string, mimeType: string) {
@@ -457,13 +452,13 @@ function StatusPill({ status }: { status: string }) {
 
 function CandidateEditor({
   item,
-  originalUrl,
+  onOpenOriginal,
   costCenters,
   disabled,
   onAction,
 }: {
   item: ImportItem;
-  originalUrl: string;
+  onOpenOriginal: ((page: number | null) => void) | null;
   costCenters: Array<CostCenter & { path: string }>;
   disabled: boolean;
   onAction: (reviewStatus: string, candidate: TransactionCandidate) => Promise<void>;
@@ -505,7 +500,7 @@ function CandidateEditor({
     <div className="import-candidate-head">
       <div className="import-source-label">
         <span><ImportFileIcon filename={item.sourceKind} mimeType={item.sourceKind.includes("csv") ? "text/csv" : item.sourceKind === "image" ? "image/png" : "application/pdf"} size={16} /></span>
-        <div><strong>{originalUrl ? <a className="import-source-link" href={sourceUrl(originalUrl, item.sourcePage)} target="_blank" rel="noopener noreferrer">{sourceLabel(item)} <ExternalLink size={11} /></a> : sourceLabel(item)}</strong><small>{confidencePercent == null ? "Model confidence unavailable" : `${confidencePercent}% model confidence`}</small></div>
+        <div><strong>{onOpenOriginal ? <button className="import-source-link" onClick={() => onOpenOriginal(item.sourcePage)}>{sourceLabel(item)} <ExternalLink size={11} /></button> : sourceLabel(item)}</strong><small>{confidencePercent == null ? "Model confidence unavailable" : `${confidencePercent}% model confidence`}</small></div>
       </div>
       <StatusPill status={item.reviewStatus} />
     </div>
@@ -574,6 +569,7 @@ function BatchDetail({
   onApproveBatch,
   onPageChange,
   onRetry,
+  onOpenOriginal,
 }: {
   detail: ImportDetail | null;
   loading: boolean;
@@ -585,6 +581,7 @@ function BatchDetail({
   onApproveBatch: () => Promise<void>;
   onPageChange: (page: number) => void;
   onRetry: () => void;
+  onOpenOriginal: ((page: number | null) => void) | null;
 }) {
   if (loading && !detail) return <section className="panel import-detail-empty"><LoaderCircle className="spin" size={28} /><strong>Loading import…</strong></section>;
   if (!detail) return <section className="panel import-detail-empty"><UploadCloud size={31} /><strong>Select an import</strong><span>Choose a batch to inspect its status and review candidates.</span></section>;
@@ -605,7 +602,7 @@ function BatchDetail({
     <div className="import-detail-head">
       <div className={`import-file-icon large ${fileKind(batch.originalFilename, batch.mimeType)}`}><ImportFileIcon filename={batch.originalFilename} mimeType={batch.mimeType} size={22} /></div>
       <div className="import-detail-title"><h2>{batch.originalFilename}</h2><p>{batch.accountName || "Financial account"} · {formatBytes(document?.byteSize || batch.byteSize)}{document?.pageCount ? ` · ${document.pageCount} pages` : ""} · uploaded {formatDate(batch.createdAt, true)}</p></div>
-      {document?.originalUrl && <a className="button secondary small import-original-link" href={document.originalUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open original</a>}
+      {document && onOpenOriginal && <button className="button secondary small import-original-link" onClick={() => onOpenOriginal(null)}><ExternalLink size={14} /> Open original</button>}
       <StatusPill status={status} />
     </div>
 
@@ -628,7 +625,7 @@ function BatchDetail({
 
       {total > 0 ? <div className="import-candidates">
         <div className="import-candidates-heading"><div><h3>{completed ? "Imported transactions" : "Review candidates"}</h3><p>{completed ? "These candidates were committed to your ledger with their source provenance." : "Check every value against its source, then approve or reject it."}</p></div>{document?.sha256 && <span title={document.sha256}>SHA-256 · {document.sha256.slice(0, 10)}…</span>}</div>
-        {items.map((item) => <CandidateEditor key={item.id} item={item} originalUrl={document?.originalUrl || ""} costCenters={costCenters} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}
+        {items.map((item) => <CandidateEditor key={item.id} item={item} onOpenOriginal={document ? onOpenOriginal : null} costCenters={costCenters} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}
         {pagination.totalPages > 1 && <nav className="import-pagination" aria-label="Candidate pages">
           <span>Showing {(pagination.page - 1) * pagination.pageSize + 1}–{Math.min(pagination.page * pagination.pageSize, pagination.total)} of {pagination.total}</span>
           <div><button className="button secondary small" disabled={loading || pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}><ChevronLeft size={15} /> Previous</button><strong>Page {pagination.page} of {pagination.totalPages}</strong><button className="button secondary small" disabled={loading || pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next <ChevronRight size={15} /></button></div>
@@ -649,6 +646,7 @@ function BatchDetail({
 
 export function ImportsWorkspace() {
   const { accounts, costCenters, loading: accountsLoading, error: financeError, reload: reloadFinance } = useFinanceData();
+  const { workspaceId, workspaceFetch } = useWorkspace();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [accountId, setAccountId] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -673,7 +671,7 @@ export function ImportsWorkspace() {
   const loadBatches = useCallback(async () => {
     setListLoading(true);
     try {
-      const next = await fetchBatches();
+      const next = await fetchBatches(workspaceFetch);
       setBatches(next.batches);
       setLimits(next.limits);
       setSelectedId((current) => current || next.batches[0]?.id || "");
@@ -683,17 +681,17 @@ export function ImportsWorkspace() {
     } finally {
       setListLoading(false);
     }
-  }, []);
+  }, [workspaceFetch]);
 
   const getDetail = useCallback(async (id: string, page: number) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(REVIEW_PAGE_SIZE) });
-    const response = await fetch(`/api/imports/${encodeURIComponent(id)}?${params}`, { cache: "no-store" });
+    const response = await workspaceFetch(`/api/imports/${encodeURIComponent(id)}?${params}`, { cache: "no-store" });
     const body = await responseBody(response);
     if (!response.ok) throw new Error(errorFromBody(body, "Could not load this import."));
     const next = normalizeDetail(body);
     if (!next) throw new Error("The import response was incomplete.");
     return next;
-  }, []);
+  }, [workspaceFetch]);
 
   const acceptDetail = useCallback((next: ImportDetail) => {
     setDetail(next);
@@ -713,7 +711,7 @@ export function ImportsWorkspace() {
 
   useEffect(() => {
     let active = true;
-    fetchBatches()
+    fetchBatches(workspaceFetch)
       .then((next) => {
         if (!active) return;
         setBatches(next.batches);
@@ -724,7 +722,7 @@ export function ImportsWorkspace() {
       .catch((caught) => { if (active) setActionError(caught instanceof Error ? caught.message : "Could not load imports."); })
       .finally(() => { if (active) setListLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [workspaceFetch]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -767,7 +765,7 @@ export function ImportsWorkspace() {
   };
 
   const upload = () => {
-    if (!pendingFile || !selectedAccountId || uploading) return;
+    if (!pendingFile || !selectedAccountId || uploading || !workspaceId) return;
     setUploading(true);
     setUploadProgress(0);
     setUploadError("");
@@ -777,6 +775,7 @@ export function ImportsWorkspace() {
     request.setRequestHeader("Content-Type", pendingFile.type || "application/octet-stream");
     request.setRequestHeader("X-File-Name", encodeURIComponent(pendingFile.name));
     request.setRequestHeader("X-Account-Id", selectedAccountId);
+    request.setRequestHeader("X-Orbit-Workspace-Id", workspaceId);
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100));
     };
@@ -821,7 +820,7 @@ export function ImportsWorkspace() {
     setBusyItemIds((current) => new Set(current).add(itemId));
     setActionError("");
     try {
-      const response = await fetch(`/api/imports/${encodeURIComponent(selectedId)}/items/${encodeURIComponent(itemId)}`, {
+      const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/items/${encodeURIComponent(itemId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reviewStatus, candidate, reviewRevision }),
@@ -866,7 +865,7 @@ export function ImportsWorkspace() {
     setApproving(true);
     setActionError("");
     try {
-      const response = await fetch(`/api/imports/${encodeURIComponent(selectedId)}/approve`, {
+      const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reviewRevision }),
@@ -887,7 +886,7 @@ export function ImportsWorkspace() {
     setDetailLoading(true);
     setActionError("");
     try {
-      const response = await fetch(`/api/imports/${encodeURIComponent(selectedId)}/retry`, { method: "POST" });
+      const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/retry`, { method: "POST" });
       const body = await responseBody(response);
       if (!response.ok) throw new Error(errorFromBody(body, "Could not retry this import."));
       await Promise.all([refreshDetail(selectedId), loadBatches()]);
@@ -897,6 +896,15 @@ export function ImportsWorkspace() {
       setDetailLoading(false);
     }
   };
+
+  const openOriginal = useCallback(async (page: number | null) => {
+    if (!selectedId) return;
+    const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/document`, { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not open the original document.");
+    const url = URL.createObjectURL(await response.blob());
+    window.open(page ? `${url}#page=${page}` : url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }, [selectedId, workspaceFetch]);
 
   const selectBatch = (id: string) => {
     setDetailLoading(true);
@@ -934,7 +942,7 @@ export function ImportsWorkspace() {
 
     <div className="imports-layout">
       <BatchList batches={batches} selectedId={selectedId} loading={listLoading} onSelect={selectBatch} onRefresh={() => { void loadBatches(); if (selectedId) void refreshDetail(selectedId); }} />
-      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} />
+      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} onOpenOriginal={(page) => { void openOriginal(page).catch((caught) => setActionError(caught instanceof Error ? caught.message : "Could not open the original document.")); }} />
     </div>
   </div>;
 }

@@ -2,6 +2,10 @@
 
 Orbit Finance is a local-first Next.js finance app backed by PostgreSQL 17. Financial documents and model requests stay on your machine.
 
+## Workspaces
+
+Every account, transaction, cost center, currency, preference, report, and import belongs to one workspace. Use the workspace selector in the sidebar to switch datasets, and use **Settings → Workspaces** to create, rename, archive, restore, or permanently delete a workspace. Existing installations are migrated into a default **Personal** workspace when `npm run db:migrate` runs.
+
 ## Local document-import pipeline
 
 The Imports workspace accepts PDF, CSV, JPEG, PNG, and WebP statements:

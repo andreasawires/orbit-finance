@@ -84,31 +84,31 @@ function itemCandidate(
   };
 }
 
-async function recoverBatch(batchId: string) {
-  let batch = await getImportBatch(batchId);
+async function recoverBatch(workspaceId: string, batchId: string) {
+  let batch = await getImportBatch(workspaceId, batchId);
   if (!batch) throw new Error(`Import batch ${batchId} no longer exists.`);
   if (["awaiting_review", "completed", "cancelled"].includes(batch.status)) return null;
 
   if (["extracting", "converting", "validating"].includes(batch.status)) {
-    batch = await updateImportBatchStatus(batchId, "failed", {
+    batch = await updateImportBatchStatus(workspaceId, batchId, "failed", {
       actorType: "worker",
       errorCode: "INTERRUPTED_ATTEMPT",
       errorMessage: "A previous worker stopped before completing this import; processing was restarted.",
     });
   }
   if (batch.status === "uploaded" || batch.status === "failed") {
-    batch = await updateImportBatchStatus(batchId, "queued", {
+    batch = await updateImportBatchStatus(workspaceId, batchId, "queued", {
       actorType: "worker",
       details: { reason: "worker-attempt" },
     });
   }
   if (batch.status !== "queued") throw new Error(`Import batch cannot be processed while it is ${batch.status}.`);
-  await updateImportBatchStatus(batchId, "extracting", { actorType: "worker" });
-  return getImportWork(batchId);
+  await updateImportBatchStatus(workspaceId, batchId, "extracting", { actorType: "worker" });
+  return getImportWork(workspaceId, batchId);
 }
 
 async function processImport(job: Job<ImportJobData>) {
-  const work = await recoverBatch(job.data.batchId);
+  const work = await recoverBatch(job.data.workspaceId, job.data.batchId);
   if (!work) return;
   if (job.signal.aborted) throw new Error("Import job was cancelled before extraction.");
 
@@ -122,7 +122,7 @@ async function processImport(job: Job<ImportJobData>) {
     }, async () => {
       if (conversionStarted) return;
       conversionStarted = true;
-      await updateImportBatchStatus(work.batch.id, "converting", { actorType: "worker" });
+      await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "converting", { actorType: "worker" });
     });
     if (job.signal.aborted) throw new Error("Import job was cancelled during extraction.");
 
@@ -132,7 +132,7 @@ async function processImport(job: Job<ImportJobData>) {
         `${result.warnings.length - visibleExtractionWarningLimit} additional extraction warnings were summarized; review the paginated candidates against the original source.`,
       );
     }
-    await updateImportDocumentInspection(work.document.id, {
+    await updateImportDocumentInspection(job.data.workspaceId, work.document.id, {
       pageCount: result.pageCount,
       metadata: {
         extractionWarnings: visibleWarnings,
@@ -140,7 +140,7 @@ async function processImport(job: Job<ImportJobData>) {
         inspectedAt: new Date().toISOString(),
       },
     });
-    await updateImportBatchStatus(work.batch.id, "validating", { actorType: "worker" });
+    await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "validating", { actorType: "worker" });
 
     const candidates = result.candidates.map((item, index) => itemCandidate(
       index + 1,
@@ -149,6 +149,7 @@ async function processImport(job: Job<ImportJobData>) {
       work.account.currency,
     ));
     const importedFingerprints = await findImportedFingerprints(
+      job.data.workspaceId,
       work.account.id,
       candidates.flatMap((candidate) => candidate.deduplicationFingerprint ? [candidate.deduplicationFingerprint] : []),
     );
@@ -165,8 +166,8 @@ async function processImport(job: Job<ImportJobData>) {
       }
       seenFingerprints.add(fingerprint);
     }
-    await replaceImportItems(work.batch.id, candidates);
-    await updateImportBatchStatus(work.batch.id, "awaiting_review", {
+    await replaceImportItems(job.data.workspaceId, work.batch.id, candidates);
+    await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "awaiting_review", {
       actorType: "worker",
       details: {
         candidateCount: candidates.length,
@@ -175,9 +176,9 @@ async function processImport(job: Job<ImportJobData>) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown import processing error.";
-    const current = await getImportBatch(work.batch.id).catch(() => null);
+    const current = await getImportBatch(job.data.workspaceId, work.batch.id).catch(() => null);
     if (current && !["failed", "completed", "cancelled"].includes(current.status)) {
-      await updateImportBatchStatus(work.batch.id, "failed", {
+      await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "failed", {
         actorType: "worker",
         errorCode: "IMPORT_PROCESSING_FAILED",
         errorMessage: message.slice(0, 2_000),
@@ -219,8 +220,8 @@ async function main() {
   });
 
   const recoverUploads = async () => {
-    const batchIds = await listUnqueuedUploadBatchIds();
-    await Promise.all(batchIds.map((batchId) => enqueueImport(batchId)));
+    const batches = await listUnqueuedUploadBatchIds();
+    await Promise.all(batches.map(({ batchId, workspaceId }) => enqueueImport(batchId, workspaceId)));
   };
   await recoverUploads();
   const recoveryInterval = setInterval(() => {

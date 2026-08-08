@@ -37,7 +37,7 @@ export async function getImportQueue() {
   return globalForImportQueue.orbitImportBoss;
 }
 
-export async function enqueueImport(batchId: string) {
+export async function enqueueImport(batchId: string, workspaceId: string) {
   const boss = await getImportQueue();
-  return boss.send(IMPORT_QUEUE, { batchId } satisfies ImportJobData);
+  return boss.send(IMPORT_QUEUE, { batchId, workspaceId } satisfies ImportJobData);
 }

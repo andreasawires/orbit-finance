@@ -95,6 +95,7 @@ function normalizeFingerprint(value: string | null | undefined) {
 function documentFromRow(row: Row): ImportDocument {
   return {
     id: String(row.id),
+    workspaceId: String(row.workspace_id),
     sha256: String(row.sha256),
     storageKey: String(row.storage_key),
     originalFilename: String(row.original_filename),
@@ -110,6 +111,7 @@ function documentFromRow(row: Row): ImportDocument {
 function batchFromRow(row: Row): ImportBatch {
   return {
     id: String(row.id),
+    workspaceId: String(row.workspace_id),
     documentId: String(row.document_id),
     accountId: String(row.account_id),
     sourceKind: row.source_kind as ImportBatch["sourceKind"],
@@ -140,6 +142,7 @@ function batchFromRow(row: Row): ImportBatch {
 function itemFromRow(row: Row): ImportItem {
   return {
     id: String(row.id),
+    workspaceId: String(row.workspace_id),
     batchId: String(row.batch_id),
     ordinal: Number(row.ordinal),
     validationStatus: row.validation_status as ImportItem["validationStatus"],
@@ -175,6 +178,7 @@ function itemFromRow(row: Row): ImportItem {
 function eventFromRow(row: Row): ImportEvent {
   return {
     id: String(row.id),
+    workspaceId: String(row.workspace_id),
     batchId: String(row.batch_id),
     itemId: row.item_id == null ? null : String(row.item_id),
     eventName: String(row.event_name),
@@ -213,10 +217,11 @@ export async function registerImportDocument(input: RegisterImportDocumentInput)
   }
 
   const result = await db.query(`INSERT INTO import_documents
-    (sha256, storage_key, original_filename, media_type, size_bytes, page_count, metadata)
-    VALUES ($1, $2, $3, $4, $5::bigint, $6, $7::jsonb)
-    ON CONFLICT (sha256) DO UPDATE SET sha256 = EXCLUDED.sha256
+    (workspace_id, sha256, storage_key, original_filename, media_type, size_bytes, page_count, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6::bigint, $7, $8::jsonb)
+    ON CONFLICT (workspace_id, sha256) DO UPDATE SET sha256 = EXCLUDED.sha256
     RETURNING *`, [
+    input.workspaceId,
     input.sha256,
     input.storageKey,
     input.originalFilename,
@@ -229,15 +234,16 @@ export async function registerImportDocument(input: RegisterImportDocumentInput)
   return { document, reused: document.storageKey !== input.storageKey };
 }
 
-export async function deleteUnreferencedImportDocument(documentId: string) {
+export async function deleteUnreferencedImportDocument(workspaceId: string, documentId: string) {
   const result = await db.query<{ storage_key: string }>(`DELETE FROM import_documents d
-    WHERE d.id = $1
-      AND NOT EXISTS (SELECT 1 FROM import_batches b WHERE b.document_id = d.id)
-    RETURNING d.storage_key`, [documentId]);
+    WHERE d.workspace_id = $1 AND d.id = $2
+      AND NOT EXISTS (SELECT 1 FROM import_batches b WHERE b.workspace_id = $1 AND b.document_id = d.id)
+    RETURNING d.storage_key`, [workspaceId, documentId]);
   return result.rowCount ? String(result.rows[0].storage_key) : null;
 }
 
 export async function updateImportDocumentInspection(
+  workspaceId: string,
   documentId: string,
   input: { pageCount?: number | null; metadata?: JsonObject },
 ) {
@@ -245,11 +251,12 @@ export async function updateImportDocumentInspection(
     throw new Error("pageCount must be a positive integer.");
   }
   const result = await db.query(`UPDATE import_documents SET
-      page_count = CASE WHEN $2::boolean THEN $3 ELSE page_count END,
-      metadata = CASE WHEN $4::boolean THEN metadata || $5::jsonb ELSE metadata END,
+      page_count = CASE WHEN $3::boolean THEN $4 ELSE page_count END,
+      metadata = CASE WHEN $5::boolean THEN metadata || $6::jsonb ELSE metadata END,
       updated_at = now()
-    WHERE id = $1
+    WHERE workspace_id = $1 AND id = $2
     RETURNING *`, [
+    workspaceId,
     documentId,
     Object.hasOwn(input, "pageCount"),
     input.pageCount ?? null,
@@ -265,12 +272,13 @@ export async function createImportBatch(input: CreateImportBatchInput): Promise<
   if (input.idempotencyKey != null) assertNonEmpty(input.idempotencyKey, "idempotencyKey");
   return inTransaction(async (client) => {
     const result = await client.query(`INSERT INTO import_batches (
-        document_id, account_id, source_kind, idempotency_key, pipeline_version,
+        workspace_id, document_id, account_id, source_kind, idempotency_key, pipeline_version,
         parser_name, parser_version, extractor_name, extractor_version,
         model_name, model_version, model_quantization, prompt_version, settings
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
-      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+      ON CONFLICT (workspace_id, idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
       RETURNING *`, [
+      input.workspaceId,
       input.documentId,
       input.accountId,
       input.sourceKind,
@@ -290,31 +298,31 @@ export async function createImportBatch(input: CreateImportBatchInput): Promise<
     if (batch.documentId !== input.documentId || batch.accountId !== input.accountId || batch.sourceKind !== input.sourceKind) {
       throw new Error("The idempotency key is already attached to a different import request.");
     }
-    await client.query(`INSERT INTO import_events (batch_id, event_name, to_status, actor_type)
-      SELECT $1, 'batch.created', 'uploaded', 'system'
+    await client.query(`INSERT INTO import_events (workspace_id, batch_id, event_name, to_status, actor_type)
+      SELECT $1, $2, 'batch.created', 'uploaded', 'system'
       WHERE NOT EXISTS (
-        SELECT 1 FROM import_events WHERE batch_id = $1 AND event_name = 'batch.created'
-      )`, [batch.id]);
+        SELECT 1 FROM import_events WHERE workspace_id = $1 AND batch_id = $2 AND event_name = 'batch.created'
+      )`, [input.workspaceId, batch.id]);
     return batch;
   });
 }
 
-export async function getImportBatch(batchId: string): Promise<ImportBatch | null> {
-  const result = await db.query("SELECT * FROM import_batches WHERE id = $1", [batchId]);
+export async function getImportBatch(workspaceId: string, batchId: string): Promise<ImportBatch | null> {
+  const result = await db.query("SELECT * FROM import_batches WHERE workspace_id = $1 AND id = $2", [workspaceId, batchId]);
   return result.rowCount ? batchFromRow(result.rows[0]) : null;
 }
 
 export async function listUnqueuedUploadBatchIds(limit = 100) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("limit must be between 1 and 500.");
-  const result = await db.query<{ id: string }>(`SELECT id
+  const result = await db.query<{ id: string; workspace_id: string }>(`SELECT id, workspace_id
     FROM import_batches
     WHERE status = 'uploaded' AND updated_at < now() - interval '30 seconds'
     ORDER BY updated_at
     LIMIT $1`, [limit]);
-  return result.rows.map((row) => String(row.id));
+  return result.rows.map((row) => ({ batchId: String(row.id), workspaceId: String(row.workspace_id) }));
 }
 
-export async function getImportWork(batchId: string): Promise<ImportWork | null> {
+export async function getImportWork(workspaceId: string, batchId: string): Promise<ImportWork | null> {
   const result = await db.query(`SELECT
       b.*,
       row_to_json(d) AS document_record,
@@ -322,9 +330,9 @@ export async function getImportWork(batchId: string): Promise<ImportWork | null>
       a.name AS work_account_name,
       a.currency AS work_account_currency
     FROM import_batches b
-    JOIN import_documents d ON d.id = b.document_id
-    JOIN accounts a ON a.id = b.account_id
-    WHERE b.id = $1`, [batchId]);
+    JOIN import_documents d ON d.id = b.document_id AND d.workspace_id = b.workspace_id
+    JOIN accounts a ON a.id = b.account_id AND a.workspace_id = b.workspace_id
+    WHERE b.workspace_id = $1 AND b.id = $2`, [workspaceId, batchId]);
   if (!result.rowCount) return null;
   const row = result.rows[0];
   return {
@@ -338,7 +346,7 @@ export async function getImportWork(batchId: string): Promise<ImportWork | null>
   };
 }
 
-export async function listImportBatches(limit = 50): Promise<ImportBatchSummary[]> {
+export async function listImportBatches(workspaceId: string, limit = 50): Promise<ImportBatchSummary[]> {
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("limit must be between 1 and 200.");
   const result = await db.query(`SELECT
       b.*,
@@ -356,12 +364,12 @@ export async function listImportBatches(limit = 50): Promise<ImportBatchSummary[
       count(i.id) FILTER (WHERE i.review_status = 'rejected')::int AS item_rejected,
       count(i.id) FILTER (WHERE i.imported_at IS NOT NULL)::int AS item_imported
     FROM import_batches b
-    JOIN import_documents d ON d.id = b.document_id
-    JOIN accounts a ON a.id = b.account_id
-    LEFT JOIN import_items i ON i.batch_id = b.id
-    GROUP BY b.id, d.id, a.id
+    JOIN import_documents d ON d.id = b.document_id AND d.workspace_id = b.workspace_id
+    JOIN accounts a ON a.id = b.account_id AND a.workspace_id = b.workspace_id
+    LEFT JOIN import_items i ON i.batch_id = b.id AND i.workspace_id = b.workspace_id
+    WHERE b.workspace_id = $1 GROUP BY b.id, d.id, a.id
     ORDER BY b.created_at DESC
-    LIMIT $1`, [limit]);
+    LIMIT $2`, [workspaceId, limit]);
   return result.rows.map((row) => ({
     batch: batchFromRow(row),
     document: {
@@ -389,6 +397,7 @@ export async function listImportBatches(limit = 50): Promise<ImportBatchSummary[
 }
 
 export async function getImportBatchDetail(
+  workspaceId: string,
   batchId: string,
   options: { page?: number; pageSize?: number } = {},
 ): Promise<ImportBatchDetail | null> {
@@ -411,9 +420,9 @@ export async function getImportBatchDetail(
         a.name AS work_account_name,
         a.currency AS work_account_currency
       FROM import_batches b
-      JOIN import_documents d ON d.id = b.document_id
-      JOIN accounts a ON a.id = b.account_id
-      WHERE b.id = $1`, [batchId]);
+      JOIN import_documents d ON d.id = b.document_id AND d.workspace_id = b.workspace_id
+      JOIN accounts a ON a.id = b.account_id AND a.workspace_id = b.workspace_id
+      WHERE b.workspace_id = $1 AND b.id = $2`, [workspaceId, batchId]);
     if (!workResult.rowCount) {
       await client.query("COMMIT");
       return null;
@@ -433,7 +442,7 @@ export async function getImportBatchDetail(
         count(*) FILTER (WHERE review_status = 'approved')::int AS approved,
         count(*) FILTER (WHERE review_status = 'rejected')::int AS rejected,
         count(*) FILTER (WHERE review_status = 'pending')::int AS pending
-      FROM import_items WHERE batch_id = $1`, [batchId]);
+      FROM import_items WHERE workspace_id = $1 AND batch_id = $2`, [workspaceId, batchId]);
     const counts = {
       total: Number(countsResult.rows[0].total),
       approved: Number(countsResult.rows[0].approved),
@@ -443,14 +452,14 @@ export async function getImportBatchDetail(
     const totalPages = Math.max(1, Math.ceil(counts.total / pageSize));
     const safePage = Math.min(page, totalPages);
     const [itemResult, eventResult] = await Promise.all([
-      client.query("SELECT * FROM import_items WHERE batch_id = $1 ORDER BY ordinal LIMIT $2 OFFSET $3", [
-        batchId,
+      client.query("SELECT * FROM import_items WHERE workspace_id = $1 AND batch_id = $2 ORDER BY ordinal LIMIT $3 OFFSET $4", [
+        workspaceId, batchId,
         pageSize,
         (safePage - 1) * pageSize,
       ]),
       client.query(`SELECT * FROM (
-          SELECT * FROM import_events WHERE batch_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100
-        ) AS recent ORDER BY created_at, id`, [batchId]),
+          SELECT * FROM import_events WHERE workspace_id = $1 AND batch_id = $2 ORDER BY created_at DESC, id DESC LIMIT 100
+        ) AS recent ORDER BY created_at, id`, [workspaceId, batchId]),
     ]);
     await client.query("COMMIT");
     return {
@@ -478,9 +487,9 @@ export type TransitionImportBatchInput = {
   errorMessage?: string | null;
 };
 
-export async function transitionImportBatch(batchId: string, input: TransitionImportBatchInput) {
+export async function transitionImportBatch(workspaceId: string, batchId: string, input: TransitionImportBatchInput) {
   return inTransaction(async (client) => {
-    const currentResult = await client.query("SELECT * FROM import_batches WHERE id = $1 FOR UPDATE", [batchId]);
+    const currentResult = await client.query("SELECT * FROM import_batches WHERE workspace_id = $1 AND id = $2 FOR UPDATE", [workspaceId, batchId]);
     if (!currentResult.rowCount) throw new Error("Import batch not found.");
     const current = batchFromRow(currentResult.rows[0]);
     if (current.status === input.status) return current;
@@ -489,20 +498,20 @@ export async function transitionImportBatch(batchId: string, input: TransitionIm
     }
     const updated = await client.query(`UPDATE import_batches SET
         status = next.status,
-        error_code = CASE WHEN next.status = 'failed' THEN $3 ELSE NULL END,
-        error_message = CASE WHEN next.status = 'failed' THEN $4 ELSE NULL END,
+        error_code = CASE WHEN next.status = 'failed' THEN $4 ELSE NULL END,
+        error_message = CASE WHEN next.status = 'failed' THEN $5 ELSE NULL END,
         queued_at = CASE WHEN next.status = 'queued' THEN COALESCE(queued_at, now()) ELSE queued_at END,
         started_at = CASE WHEN next.status = 'extracting' THEN COALESCE(started_at, now()) ELSE started_at END,
         review_ready_at = CASE WHEN next.status = 'awaiting_review' THEN COALESCE(review_ready_at, now()) ELSE review_ready_at END,
         completed_at = CASE WHEN next.status = 'completed' THEN COALESCE(completed_at, now()) ELSE completed_at END,
         updated_at = now()
-      FROM (SELECT $2::varchar(24) AS status) AS next
-      WHERE id = $1
-      RETURNING *`, [batchId, input.status, input.errorCode ?? null, input.errorMessage ?? null]);
+      FROM (SELECT $3::varchar(24) AS status) AS next
+      WHERE workspace_id = $1 AND id = $2
+      RETURNING *`, [workspaceId, batchId, input.status, input.errorCode ?? null, input.errorMessage ?? null]);
     await client.query(`INSERT INTO import_events
-        (batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
-      VALUES ($1, 'batch.status_changed', $2, $3, $4, $5, $6::jsonb)`, [
-      batchId,
+        (workspace_id, batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
+      VALUES ($1, $2, 'batch.status_changed', $3, $4, $5, $6, $7::jsonb)`, [
+      workspaceId, batchId,
       current.status,
       input.status,
       input.actorType ?? "system",
@@ -514,11 +523,12 @@ export async function transitionImportBatch(batchId: string, input: TransitionIm
 }
 
 export function updateImportBatchStatus(
+  workspaceId: string,
   batchId: string,
   status: ImportBatchStatus,
   options: Omit<TransitionImportBatchInput, "status"> = {},
 ) {
-  return transitionImportBatch(batchId, { ...options, status });
+  return transitionImportBatch(workspaceId, batchId, { ...options, status });
 }
 
 function normalizeCandidate(candidate: ImportItemCandidate) {
@@ -567,7 +577,7 @@ function normalizeCandidate(candidate: ImportItemCandidate) {
   };
 }
 
-export async function replaceImportItems(batchId: string, candidates: readonly ImportItemCandidate[]) {
+export async function replaceImportItems(workspaceId: string, batchId: string, candidates: readonly ImportItemCandidate[]) {
   const ordinals = new Set<number>();
   for (const candidate of candidates) {
     if (!Number.isInteger(candidate.ordinal) || candidate.ordinal < 1) {
@@ -579,36 +589,36 @@ export async function replaceImportItems(batchId: string, candidates: readonly I
 
   return inTransaction(async (client) => {
     const batchResult = await client.query<{ status: ImportBatchStatus }>(
-      "SELECT status FROM import_batches WHERE id = $1 FOR UPDATE",
-      [batchId],
+      "SELECT status FROM import_batches WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
+      [workspaceId, batchId],
     );
     if (!batchResult.rowCount) throw new Error("Import batch not found.");
     if (!["extracting", "converting", "validating"].includes(batchResult.rows[0].status)) {
       throw new Error(`Import items cannot be replaced while the batch is ${batchResult.rows[0].status}.`);
     }
     const protectedItems = await client.query(`SELECT count(*)::int AS count FROM import_items i
-      WHERE i.batch_id = $1 AND (i.review_status <> 'pending' OR i.imported_at IS NOT NULL
-        OR EXISTS (SELECT 1 FROM transaction_sources s WHERE s.import_item_id = i.id))`, [batchId]);
+      WHERE i.workspace_id = $1 AND i.batch_id = $2 AND (i.review_status <> 'pending' OR i.imported_at IS NOT NULL
+        OR EXISTS (SELECT 1 FROM transaction_sources s WHERE s.workspace_id = $1 AND s.import_item_id = i.id))`, [workspaceId, batchId]);
     if (Number(protectedItems.rows[0].count) > 0) {
       throw new Error("Reviewed or imported items cannot be replaced.");
     }
-    await client.query("DELETE FROM import_items WHERE batch_id = $1", [batchId]);
+    await client.query("DELETE FROM import_items WHERE workspace_id = $1 AND batch_id = $2", [workspaceId, batchId]);
     const persistenceChunkSize = 1_000;
     for (let offset = 0; offset < candidates.length; offset += persistenceChunkSize) {
       const normalized = candidates.slice(offset, offset + persistenceChunkSize).map(normalizeCandidate);
       await client.query(`INSERT INTO import_items (
-          batch_id, ordinal, validation_status, source_page, source_row, source_locator,
+          workspace_id, batch_id, ordinal, validation_status, source_page, source_row, source_locator,
           source_text, raw_source, model_output, occurred_on, value_on, description, note,
           amount, currency, transaction_type, cost_center_id, source_system, external_id,
           deduplication_fingerprint, confidence, validation_errors, validation_warnings
         ) SELECT
-          $1, c.ordinal, c."validationStatus", c."sourcePage", c."sourceRow", c."sourceLocator",
+          $1, $2, c.ordinal, c."validationStatus", c."sourcePage", c."sourceRow", c."sourceLocator",
           c."sourceText", c."rawSource", c."modelOutput", c."occurredOn"::date,
           c."valueOn"::date, c.description, c.note, c.amount::numeric, c.currency,
           c."transactionType", c."costCenterId"::uuid, c."sourceSystem", c."externalId",
           c."deduplicationFingerprint", c.confidence::numeric, c."validationErrors",
           c."validationWarnings"
-        FROM jsonb_to_recordset($2::jsonb) AS c(
+        FROM jsonb_to_recordset($3::jsonb) AS c(
           ordinal integer,
           "validationStatus" text,
           "sourcePage" integer,
@@ -631,15 +641,16 @@ export async function replaceImportItems(batchId: string, candidates: readonly I
           confidence text,
           "validationErrors" jsonb,
           "validationWarnings" jsonb
-        )`, [batchId, JSON.stringify(normalized)]);
+        )`, [workspaceId, batchId, JSON.stringify(normalized)]);
     }
-    await client.query(`INSERT INTO import_events (batch_id, event_name, actor_type, details)
-      VALUES ($1, 'items.replaced', 'worker', jsonb_build_object('count', $2::integer))`, [batchId, candidates.length]);
+    await client.query(`INSERT INTO import_events (workspace_id, batch_id, event_name, actor_type, details)
+      VALUES ($1, $2, 'items.replaced', 'worker', jsonb_build_object('count', $3::integer))`, [workspaceId, batchId, candidates.length]);
     return candidates.length;
   });
 }
 
 export async function listImportItems(
+  workspaceId: string,
   batchId: string,
   options: { limit?: number; offset?: number } = {},
 ): Promise<ImportItem[]> {
@@ -648,59 +659,60 @@ export async function listImportItems(
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("limit must be between 1 and 200.");
   if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer.");
   const result = await db.query(
-    "SELECT * FROM import_items WHERE batch_id = $1 ORDER BY ordinal LIMIT $2 OFFSET $3",
-    [batchId, limit, offset],
+    "SELECT * FROM import_items WHERE workspace_id = $1 AND batch_id = $2 ORDER BY ordinal LIMIT $3 OFFSET $4",
+    [workspaceId, batchId, limit, offset],
   );
   return result.rows.map(itemFromRow);
 }
 
-export async function listImportEvents(batchId: string, limit = 100): Promise<ImportEvent[]> {
+export async function listImportEvents(workspaceId: string, batchId: string, limit = 100): Promise<ImportEvent[]> {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("limit must be between 1 and 500.");
   const result = await db.query(`SELECT * FROM (
-      SELECT * FROM import_events WHERE batch_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
-    ) AS recent ORDER BY created_at, id`, [batchId, limit]);
+      SELECT * FROM import_events WHERE workspace_id = $1 AND batch_id = $2 ORDER BY created_at DESC, id DESC LIMIT $3
+    ) AS recent ORDER BY created_at, id`, [workspaceId, batchId, limit]);
   return result.rows.map(eventFromRow);
 }
 
-export async function listImportTransactionMappings(batchId: string, itemIds?: readonly string[]) {
+export async function listImportTransactionMappings(workspaceId: string, batchId: string, itemIds?: readonly string[]) {
   if (itemIds && !itemIds.length) return [];
   const result = await db.query(`SELECT s.import_item_id, s.transaction_id
     FROM transaction_sources s
-    JOIN import_items i ON i.id = s.import_item_id
-    WHERE i.batch_id = $1
-      AND ($2::uuid[] IS NULL OR i.id = ANY($2::uuid[]))
-    ORDER BY i.ordinal`, [batchId, itemIds ? [...itemIds] : null]);
+    JOIN import_items i ON i.id = s.import_item_id AND i.workspace_id = s.workspace_id
+    WHERE s.workspace_id = $1 AND i.batch_id = $2
+      AND ($3::uuid[] IS NULL OR i.id = ANY($3::uuid[]))
+    ORDER BY i.ordinal`, [workspaceId, batchId, itemIds ? [...itemIds] : null]);
   return result.rows.map((row) => ({
     importItemId: String(row.import_item_id),
     transactionId: String(row.transaction_id),
   }));
 }
 
-export async function findImportedFingerprints(accountId: string, fingerprints: readonly string[]) {
+export async function findImportedFingerprints(workspaceId: string, accountId: string, fingerprints: readonly string[]) {
   const normalized = [...new Set(fingerprints.map(normalizeFingerprint).filter((value): value is string => !!value))];
   if (!normalized.length) return new Set<string>();
   const result = await db.query<{ deduplication_fingerprint: string }>(`SELECT DISTINCT s.deduplication_fingerprint
     FROM transaction_sources s
-    JOIN transactions t ON t.id = s.transaction_id
-    WHERE t.account_id = $1 AND s.deduplication_fingerprint = ANY($2::char(64)[])`, [accountId, normalized]);
+    JOIN transactions t ON t.id = s.transaction_id AND t.workspace_id = s.workspace_id
+    WHERE s.workspace_id = $1 AND t.account_id = $2 AND s.deduplication_fingerprint = ANY($3::char(64)[])`, [workspaceId, accountId, normalized]);
   return new Set(result.rows.map((row) => String(row.deduplication_fingerprint)));
 }
 
-export async function importBatchHasFingerprint(batchId: string, itemId: string, fingerprint: string) {
+export async function importBatchHasFingerprint(workspaceId: string, batchId: string, itemId: string, fingerprint: string) {
   const normalized = normalizeFingerprint(fingerprint);
   if (!normalized) return false;
   const result = await db.query(`SELECT 1 FROM import_items
-    WHERE batch_id = $1 AND id <> $2 AND deduplication_fingerprint = $3
-    LIMIT 1`, [batchId, itemId, normalized]);
+    WHERE workspace_id = $1 AND batch_id = $2 AND id <> $3 AND deduplication_fingerprint = $4
+    LIMIT 1`, [workspaceId, batchId, itemId, normalized]);
   return !!result.rowCount;
 }
 
-export async function costCenterExists(id: string) {
-  const result = await db.query("SELECT 1 FROM cost_centers WHERE id = $1", [id]);
+export async function costCenterExists(workspaceId: string, id: string) {
+  const result = await db.query("SELECT 1 FROM cost_centers WHERE workspace_id = $1 AND id = $2", [workspaceId, id]);
   return !!result.rowCount;
 }
 
 export async function updateImportItemReview(
+  workspaceId: string,
   batchId: string,
   itemId: string,
   input: UpdateImportItemReviewInput,
@@ -722,8 +734,8 @@ export async function updateImportItemReview(
 
   return inTransaction(async (client) => {
     const batchResult = await client.query<{ status: ImportBatchStatus; review_revision: string }>(
-      "SELECT status, review_revision FROM import_batches WHERE id = $1 FOR UPDATE",
-      [batchId],
+      "SELECT status, review_revision FROM import_batches WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
+      [workspaceId, batchId],
     );
     if (!batchResult.rowCount) throw new Error("Import batch not found.");
     if (batchResult.rows[0].status !== "awaiting_review") {
@@ -733,13 +745,13 @@ export async function updateImportItemReview(
       throw new Error("The review changed before this candidate update. Refresh the batch and try again.");
     }
     const existing = await client.query(
-      "SELECT * FROM import_items WHERE id = $1 AND batch_id = $2 FOR UPDATE",
-      [itemId, batchId],
+      "SELECT * FROM import_items WHERE workspace_id = $1 AND id = $2 AND batch_id = $3 FOR UPDATE",
+      [workspaceId, itemId, batchId],
     );
     if (!existing.rowCount) throw new Error("Import item not found.");
     if (existing.rows[0].imported_at != null) throw new Error("An imported item can no longer be edited.");
 
-    const values: unknown[] = [itemId, batchId];
+    const values: unknown[] = [workspaceId, itemId, batchId];
     const assignments: string[] = [];
     const changedFields: string[] = [];
     const add = (column: string, field: keyof UpdateImportItemReviewInput, value: unknown, cast = "") => {
@@ -777,18 +789,17 @@ export async function updateImportItemReview(
     assignments.push("updated_at = now()");
 
     const updated = await client.query(`UPDATE import_items SET ${assignments.join(", ")}
-      WHERE id = $1 AND batch_id = $2
+      WHERE workspace_id = $1 AND id = $2 AND batch_id = $3
       RETURNING *`, values);
     const revision = await client.query<{ review_revision: string }>(`UPDATE import_batches
       SET updated_at = clock_timestamp(), review_revision = review_revision + 1
-      WHERE id = $1
-      RETURNING review_revision`, [batchId]);
+      WHERE workspace_id = $1 AND id = $2
+      RETURNING review_revision`, [workspaceId, batchId]);
     await client.query(`INSERT INTO import_events
-        (batch_id, item_id, event_name, from_status, to_status, actor_type, actor_id, details)
-      VALUES ($1, $2, 'item.reviewed', $3, $4, 'user', $5,
-        jsonb_build_object('changedFields', $6::jsonb))`, [
-      batchId,
-      itemId,
+        (workspace_id, batch_id, item_id, event_name, from_status, to_status, actor_type, actor_id, details)
+      VALUES ($1, $2, $3, 'item.reviewed', $4, $5, 'user', $6,
+        jsonb_build_object('changedFields', $7::jsonb))`, [
+      workspaceId, batchId, itemId,
       String(existing.rows[0].review_status),
       input.reviewStatus ?? "pending",
       input.reviewedBy ?? null,
@@ -826,6 +837,7 @@ function ledgerAmountProblem(item: ApprovalItem) {
 
 async function completedApprovalResult(
   client: PoolClient,
+  workspaceId: string,
   batchId: string,
   alreadyCompleted: boolean,
   insertedCount: number,
@@ -833,7 +845,7 @@ async function completedApprovalResult(
   const counts = await client.query(`SELECT
       count(*) FILTER (WHERE review_status = 'approved')::int AS approved_count,
       count(*) FILTER (WHERE review_status = 'rejected')::int AS rejected_count
-    FROM import_items WHERE batch_id = $1`, [batchId]);
+    FROM import_items WHERE workspace_id = $1 AND batch_id = $2`, [workspaceId, batchId]);
   return {
     batchId,
     status: "completed",
@@ -857,10 +869,10 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
     throw new Error("A valid review revision is required.");
   }
   const result = await inTransaction<ApproveImportBatchResult | { reviewChangedOrdinals: number[] }>(async (client) => {
-    const batchResult = await client.query("SELECT * FROM import_batches WHERE id = $1 FOR UPDATE", [input.batchId]);
+    const batchResult = await client.query("SELECT * FROM import_batches WHERE workspace_id = $1 AND id = $2 FOR UPDATE", [input.workspaceId, input.batchId]);
     if (!batchResult.rowCount) throw new Error("Import batch not found.");
     const batch = batchFromRow(batchResult.rows[0]);
-    if (batch.status === "completed") return completedApprovalResult(client, batch.id, true, 0);
+    if (batch.status === "completed") return completedApprovalResult(client, input.workspaceId, batch.id, true, 0);
     if (batch.status !== "awaiting_review" && batch.status !== "approving") {
       throw new Error(`Import batch cannot be approved while it is ${batch.status}.`);
     }
@@ -877,11 +889,11 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
         i.external_id, i.deduplication_fingerprint, i.validation_warnings,
         a.currency AS account_currency
       FROM import_items i
-      JOIN import_batches b ON b.id = i.batch_id
-      JOIN accounts a ON a.id = b.account_id
-      WHERE i.batch_id = $1
+      JOIN import_batches b ON b.id = i.batch_id AND b.workspace_id = i.workspace_id
+      JOIN accounts a ON a.id = b.account_id AND a.workspace_id = b.workspace_id
+      WHERE i.workspace_id = $1 AND i.batch_id = $2
       ORDER BY i.ordinal
-      FOR UPDATE OF i`, [batch.id]);
+      FOR UPDATE OF i`, [input.workspaceId, batch.id]);
     const items: ApprovalItem[] = itemResult.rows.map((row) => ({
       id: String(row.id),
       ordinal: Number(row.ordinal),
@@ -920,15 +932,17 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
     if (approvedItemIds.length) {
       const duplicate = await client.query(`SELECT i.ordinal
         FROM import_items i
-        JOIN import_batches b ON b.id = i.batch_id
+        JOIN import_batches b ON b.id = i.batch_id AND b.workspace_id = i.workspace_id
         JOIN transaction_sources s
           ON s.source_system = i.source_system
           AND s.external_id = i.external_id
+          AND s.workspace_id = i.workspace_id
         JOIN transactions source_transaction
           ON source_transaction.id = s.transaction_id
           AND source_transaction.account_id = b.account_id
-        WHERE i.batch_id = $1 AND i.id = ANY($2::uuid[]) AND i.external_id IS NOT NULL
-        LIMIT 1`, [batch.id, approvedItemIds]);
+          AND source_transaction.workspace_id = b.workspace_id
+        WHERE i.workspace_id = $1 AND i.batch_id = $2 AND i.id = ANY($3::uuid[]) AND i.external_id IS NOT NULL
+        LIMIT 1`, [input.workspaceId, batch.id, approvedItemIds]);
       if (duplicate.rowCount) {
         throw new Error(`Import item ${duplicate.rows[0].ordinal} has already been imported from this source.`);
       }
@@ -939,14 +953,15 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
       // is returned to pending so it cannot slip through a stale tab.
       const fingerprintConflicts = await client.query<{ id: string; ordinal: number }>(`SELECT DISTINCT i.id, i.ordinal
         FROM import_items i
-        JOIN import_batches b ON b.id = i.batch_id
-        JOIN transaction_sources s ON s.deduplication_fingerprint = i.deduplication_fingerprint
+        JOIN import_batches b ON b.id = i.batch_id AND b.workspace_id = i.workspace_id
+        JOIN transaction_sources s ON s.deduplication_fingerprint = i.deduplication_fingerprint AND s.workspace_id = i.workspace_id
         JOIN transactions source_transaction
           ON source_transaction.id = s.transaction_id
           AND source_transaction.account_id = b.account_id
-        WHERE i.batch_id = $1
-          AND i.id = ANY($2::uuid[])
-          AND i.deduplication_fingerprint IS NOT NULL`, [batch.id, approvedItemIds]);
+          AND source_transaction.workspace_id = b.workspace_id
+        WHERE i.workspace_id = $1 AND i.batch_id = $2
+          AND i.id = ANY($3::uuid[])
+          AND i.deduplication_fingerprint IS NOT NULL`, [input.workspaceId, batch.id, approvedItemIds]);
       const newlyConflicting = fingerprintConflicts.rows.filter((conflict) => {
         const item = approvedItemsById.get(String(conflict.id));
         return !item?.validationWarnings.some((warning) => (
@@ -964,15 +979,15 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
               'Possible duplicate: the same date, amount, currency, and description were seen before.'
             ),
             updated_at = clock_timestamp()
-          WHERE id = ANY($1::uuid[])`, [ids]);
+          WHERE workspace_id = $1 AND id = ANY($2::uuid[])`, [input.workspaceId, ids]);
         await client.query(`UPDATE import_batches
           SET updated_at = clock_timestamp(), review_revision = review_revision + 1
-          WHERE id = $1`, [batch.id]);
+          WHERE workspace_id = $1 AND id = $2`, [input.workspaceId, batch.id]);
         await client.query(`INSERT INTO import_events
-            (batch_id, event_name, actor_type, actor_id, details)
-          VALUES ($1, 'review.duplicate_changed', 'system', $2,
-            jsonb_build_object('ordinals', $3::jsonb))`, [
-          batch.id,
+            (workspace_id, batch_id, event_name, actor_type, actor_id, details)
+          VALUES ($1, $2, 'review.duplicate_changed', 'system', $3,
+            jsonb_build_object('ordinals', $4::jsonb))`, [
+          input.workspaceId, batch.id,
           input.approvedBy ?? null,
           JSON.stringify(newlyConflicting.map((conflict) => Number(conflict.ordinal))),
         ]);
@@ -980,23 +995,23 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
       }
     }
 
-    await client.query("UPDATE import_batches SET status = 'approving', updated_at = now() WHERE id = $1", [batch.id]);
+    await client.query("UPDATE import_batches SET status = 'approving', updated_at = now() WHERE workspace_id = $1 AND id = $2", [input.workspaceId, batch.id]);
     await client.query(`INSERT INTO import_events
-        (batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
-      VALUES ($1, 'batch.status_changed', $2, 'approving', 'user', $3,
-        jsonb_build_object('approvedItemCount', $4::integer))`, [
-      batch.id,
+        (workspace_id, batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
+      VALUES ($1, $2, 'batch.status_changed', $3, 'approving', 'user', $4,
+        jsonb_build_object('approvedItemCount', $5::integer))`, [
+      input.workspaceId, batch.id,
       batch.status,
       input.approvedBy ?? null,
       approvedItemIds.length,
     ]);
 
     await client.query(`UPDATE import_items SET
-        review_status = CASE WHEN id = ANY($2::uuid[]) THEN 'approved' ELSE 'rejected' END,
-        reviewed_by = $3,
+        review_status = CASE WHEN id = ANY($3::uuid[]) THEN 'approved' ELSE 'rejected' END,
+        reviewed_by = $4,
         reviewed_at = COALESCE(reviewed_at, now()),
         updated_at = now()
-      WHERE batch_id = $1 AND imported_at IS NULL`, [batch.id, approvedItemIds, input.approvedBy ?? null]);
+      WHERE workspace_id = $1 AND batch_id = $2 AND imported_at IS NULL`, [input.workspaceId, batch.id, approvedItemIds, input.approvedBy ?? null]);
 
     let insertedCount = 0;
     if (approvedItemIds.length) {
@@ -1004,6 +1019,7 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
           SELECT
             i.id AS import_item_id,
             gen_random_uuid() AS transaction_id,
+            b.workspace_id,
             b.account_id,
             i.occurred_on,
             i.description,
@@ -1015,44 +1031,44 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
             i.external_id,
             i.deduplication_fingerprint
           FROM import_items i
-          JOIN import_batches b ON b.id = i.batch_id
-          LEFT JOIN transaction_sources existing ON existing.import_item_id = i.id
-          WHERE i.batch_id = $1 AND i.id = ANY($2::uuid[]) AND existing.id IS NULL
+          JOIN import_batches b ON b.id = i.batch_id AND b.workspace_id = i.workspace_id
+          LEFT JOIN transaction_sources existing ON existing.import_item_id = i.id AND existing.workspace_id = i.workspace_id
+          WHERE i.workspace_id = $1 AND i.batch_id = $2 AND i.id = ANY($3::uuid[]) AND existing.id IS NULL
         ), inserted_transactions AS (
           INSERT INTO transactions (
-            id, occurred_on, description, note, account_id, cost_center_id, amount, type
+            id, workspace_id, occurred_on, description, note, account_id, cost_center_id, amount, type
           )
           SELECT
-            transaction_id, occurred_on, description, note, account_id, cost_center_id, amount, transaction_type
+            transaction_id, workspace_id, occurred_on, description, note, account_id, cost_center_id, amount, transaction_type
           FROM candidates
           RETURNING id
         )
         INSERT INTO transaction_sources (
-          transaction_id, import_item_id, account_id, source_system, external_id, deduplication_fingerprint
+          workspace_id, transaction_id, import_item_id, account_id, source_system, external_id, deduplication_fingerprint
         )
         SELECT
-          c.transaction_id, c.import_item_id, c.account_id, c.source_system, c.external_id,
+          c.workspace_id, c.transaction_id, c.import_item_id, c.account_id, c.source_system, c.external_id,
           c.deduplication_fingerprint
         FROM candidates c
         JOIN inserted_transactions t ON t.id = c.transaction_id
-        RETURNING import_item_id, transaction_id`, [batch.id, approvedItemIds]);
+        RETURNING import_item_id, transaction_id`, [input.workspaceId, batch.id, approvedItemIds]);
       insertedCount = inserted.rowCount ?? inserted.rows.length;
       await client.query(`UPDATE import_items SET imported_at = COALESCE(imported_at, now()), updated_at = now()
-        WHERE batch_id = $1 AND id = ANY($2::uuid[])`, [batch.id, approvedItemIds]);
+        WHERE workspace_id = $1 AND batch_id = $2 AND id = ANY($3::uuid[])`, [input.workspaceId, batch.id, approvedItemIds]);
     }
 
     await client.query(`UPDATE import_batches SET
         status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
-      WHERE id = $1`, [batch.id]);
+      WHERE workspace_id = $1 AND id = $2`, [input.workspaceId, batch.id]);
     await client.query(`INSERT INTO import_events
-        (batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
-      VALUES ($1, 'batch.status_changed', 'approving', 'completed', 'user', $2,
-        jsonb_build_object('insertedTransactionCount', $3::integer))`, [
-      batch.id,
+        (workspace_id, batch_id, event_name, from_status, to_status, actor_type, actor_id, details)
+      VALUES ($1, $2, 'batch.status_changed', 'approving', 'completed', 'user', $3,
+        jsonb_build_object('insertedTransactionCount', $4::integer))`, [
+      input.workspaceId, batch.id,
       input.approvedBy ?? null,
       insertedCount,
     ]);
-    return completedApprovalResult(client, batch.id, false, insertedCount);
+    return completedApprovalResult(client, input.workspaceId, batch.id, false, insertedCount);
   });
   if ("reviewChangedOrdinals" in result) {
     throw new Error(`The review changed because possible duplicates appeared for item${result.reviewChangedOrdinals.length === 1 ? "" : "s"} ${result.reviewChangedOrdinals.join(", ")}. Review them again.`);

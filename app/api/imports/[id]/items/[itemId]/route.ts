@@ -11,6 +11,7 @@ import {
   updateImportItemReview,
 } from "@/lib/imports/repository";
 import { candidateFingerprint, validateCandidate } from "@/lib/imports/validate";
+import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
 
 export const runtime = "nodejs";
 
@@ -24,11 +25,12 @@ const reviewSchema = z.object({
 
 export async function PATCH(request: NextRequest, context: Context) {
   try {
+    const workspace = await requireRequestWorkspace(request);
     const { id, itemId } = await context.params;
     if (!uuid.test(id) || !uuid.test(itemId)) {
       return NextResponse.json({ error: "Invalid import item id." }, { status: 400 });
     }
-    const work = await getImportWork(id);
+    const work = await getImportWork(workspace.id, id);
     if (!work) return NextResponse.json({ error: "Import batch not found." }, { status: 404 });
 
     const parsed = reviewSchema.safeParse(await request.json().catch(() => null));
@@ -38,7 +40,7 @@ export async function PATCH(request: NextRequest, context: Context) {
       }, { status: 400 });
     }
     if (parsed.data.reviewStatus === "rejected") {
-      const updated = await updateImportItemReview(id, itemId, {
+      const updated = await updateImportItemReview(workspace.id, id, itemId, {
         reviewStatus: "rejected",
         reviewedBy: "local-user",
       }, parsed.data.reviewRevision);
@@ -57,20 +59,20 @@ export async function PATCH(request: NextRequest, context: Context) {
       if (errors.length) {
         return NextResponse.json({ error: errors.join(" ") }, { status: 422 });
       }
-      if (candidate.data.costCenterId && !(await costCenterExists(candidate.data.costCenterId))) {
+      if (candidate.data.costCenterId && !(await costCenterExists(workspace.id, candidate.data.costCenterId))) {
         return NextResponse.json({ error: "The selected cost center no longer exists." }, { status: 422 });
       }
       const fingerprint = createHash("sha256")
         .update(candidateFingerprint(work.account.id, candidate.data))
         .digest("hex");
       const [importedFingerprints, duplicatesBatchItem] = await Promise.all([
-        findImportedFingerprints(work.account.id, [fingerprint]),
-        importBatchHasFingerprint(id, itemId, fingerprint),
+        findImportedFingerprints(workspace.id, work.account.id, [fingerprint]),
+        importBatchHasFingerprint(workspace.id, id, itemId, fingerprint),
       ]);
       const duplicateWarning = importedFingerprints.has(fingerprint) || duplicatesBatchItem
         ? ["Possible duplicate: the same date, amount, currency, and description were seen before."]
         : [];
-      const updated = await updateImportItemReview(id, itemId, {
+      const updated = await updateImportItemReview(workspace.id, id, itemId, {
         occurredOn: candidate.data.occurredOn,
         description: candidate.data.description,
         note: candidate.data.note,
@@ -94,9 +96,10 @@ export async function PATCH(request: NextRequest, context: Context) {
   } catch (error) {
     console.error("Could not update import item", error);
     const message = error instanceof Error ? error.message : "Could not update import item.";
-    const status = /not found/i.test(message) ? 404
+    const workspace = workspaceRequestFailure(error);
+    const status = workspace.status !== 503 ? workspace.status : /not found/i.test(message) ? 404
       : /cannot be reviewed|can no longer|review changed/i.test(message) ? 409
         : /plain decimal|currency|\bdate\b|\bdescription\b|\bamount\b/i.test(message) ? 422 : 503;
-    return NextResponse.json({ error: message }, { status });
+    return NextResponse.json({ error: workspace.status === 503 ? message : workspace.message }, { status });
   }
 }

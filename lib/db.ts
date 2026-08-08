@@ -1,20 +1,20 @@
 import "server-only";
 import { lockedAccountCurrency } from "@/lib/account-currency";
-import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction } from "@/lib/data";
+import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction, Workspace } from "@/lib/data";
 import { db } from "@/lib/database";
 import { IMPORT_STORAGE_ADVISORY_LOCK } from "@/lib/imports/locks";
-import { clearImportStorage } from "@/lib/imports/storage";
+import { deleteStoredFile } from "@/lib/imports/storage";
 
 const globalForDb = globalThis as unknown as { orbitSchema?: Promise<void> };
 
 type Row = Record<string, unknown>;
 
-async function ensureDatabaseSchema() {
+export async function ensureDatabaseSchema() {
   globalForDb.orbitSchema ??= (async () => {
-    const result = await db.query<{ accounts: string | null; migrations: string | null }>(
-      "SELECT to_regclass('public.accounts')::text AS accounts, to_regclass('public.schema_migrations')::text AS migrations",
+    const result = await db.query<{ accounts: string | null; migrations: string | null; workspaces: string | null }>(
+      "SELECT to_regclass('public.accounts')::text AS accounts, to_regclass('public.schema_migrations')::text AS migrations, to_regclass('public.workspaces')::text AS workspaces",
     );
-    if (!result.rows[0]?.accounts || !result.rows[0]?.migrations) {
+    if (!result.rows[0]?.accounts || !result.rows[0]?.migrations || !result.rows[0]?.workspaces) {
       throw new Error("Database schema is not migrated. Run `npm run db:migrate` first.");
     }
   })();
@@ -80,27 +80,37 @@ const currencyFromRow = (row: Row): Currency => ({
   code: String(row.code), name: String(row.name), symbol: String(row.symbol ?? ""),
 });
 
-export async function getFinanceData(): Promise<FinanceData> {
+const workspaceFromRow = (row: Row): Workspace => ({
+  id: String(row.id), name: String(row.name),
+  archivedAt: row.archived_at ? (row.archived_at instanceof Date ? row.archived_at.toISOString() : String(row.archived_at)) : null,
+  createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+});
+
+export async function getFinanceData(workspaceId: string): Promise<FinanceData> {
   await ensureDatabaseSchema();
-  const [accountsResult, transactionsResult, centersResult, currenciesResult, preferencesResult] = await Promise.all([
+  const [workspaceResult, accountsResult, transactionsResult, centersResult, currenciesResult, preferencesResult] = await Promise.all([
+    db.query("SELECT * FROM workspaces WHERE id = $1 AND archived_at IS NULL", [workspaceId]),
     db.query(`SELECT a.*, a.opening_balance + COALESCE(transaction_totals.amount, 0) AS balance
       FROM accounts a
       LEFT JOIN (
-        SELECT account_id, SUM(amount) AS amount FROM transactions GROUP BY account_id
+        SELECT account_id, SUM(amount) AS amount FROM transactions WHERE workspace_id = $1 GROUP BY account_id
       ) AS transaction_totals ON transaction_totals.account_id = a.id
-      ORDER BY a.created_at, a.name`),
+      WHERE a.workspace_id = $1 ORDER BY a.created_at, a.name`, [workspaceId]),
     db.query(`SELECT t.*, a.name AS account_name, a.currency AS transaction_currency, c.name AS cost_center
-      FROM transactions t JOIN accounts a ON a.id = t.account_id
-      LEFT JOIN cost_centers c ON c.id = t.cost_center_id
-      ORDER BY t.occurred_on DESC, t.created_at DESC`),
+      FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.workspace_id = t.workspace_id
+      LEFT JOIN cost_centers c ON c.id = t.cost_center_id AND c.workspace_id = t.workspace_id
+      WHERE t.workspace_id = $1 ORDER BY t.occurred_on DESC, t.created_at DESC`, [workspaceId]),
     db.query(`SELECT c.*, COALESCE(SUM(CASE WHEN t.type = 'Expense' THEN ABS(t.amount) ELSE 0 END), 0) AS amount
-      FROM cost_centers c LEFT JOIN transactions t ON t.cost_center_id = c.id
-      GROUP BY c.id ORDER BY c.created_at, c.name`),
-    db.query("SELECT code, name, symbol FROM currencies ORDER BY code"),
-    db.query("SELECT currency, timezone, locale, price_format FROM preferences WHERE id = 1"),
+      FROM cost_centers c LEFT JOIN transactions t ON t.cost_center_id = c.id AND t.workspace_id = c.workspace_id
+      WHERE c.workspace_id = $1 GROUP BY c.id ORDER BY c.created_at, c.name`, [workspaceId]),
+    db.query("SELECT code, name, symbol FROM currencies WHERE workspace_id = $1 ORDER BY code", [workspaceId]),
+    db.query("SELECT currency, timezone, locale, price_format FROM workspace_preferences WHERE workspace_id = $1", [workspaceId]),
   ]);
+  if (!workspaceResult.rowCount) throw new Error("Workspace not found.");
   const pref = preferencesResult.rows[0] ?? {};
   return {
+    workspace: workspaceFromRow(workspaceResult.rows[0]),
     accounts: accountsResult.rows.map(accountFromRow),
     transactions: transactionsResult.rows.map(transactionFromRow),
     costCenters: buildTree(centersResult.rows),
@@ -112,20 +122,20 @@ export async function getFinanceData(): Promise<FinanceData> {
   };
 }
 
-export async function createCurrency(input: Record<string, unknown>) {
+export async function createCurrency(workspaceId: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
   const currency = currencyInput(input);
-  await db.query("INSERT INTO currencies (code, name, symbol) VALUES ($1, $2, $3)", [currency.code, currency.name, currency.symbol]);
+  await db.query("INSERT INTO currencies (workspace_id, code, name, symbol) VALUES ($1, $2, $3, $4)", [workspaceId, currency.code, currency.name, currency.symbol]);
 }
 
-export async function updateCurrency(previousCode: string, input: Record<string, unknown>) {
+export async function updateCurrency(workspaceId: string, previousCode: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
   const currency = currencyInput(input);
   if (currency.code !== previousCode) throw new Error("Currency ISO codes are locked after creation.");
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const updated = await client.query("UPDATE currencies SET code=$1, name=$2, symbol=$3 WHERE code=$4", [currency.code, currency.name, currency.symbol, previousCode]);
+    const updated = await client.query("UPDATE currencies SET code=$1, name=$2, symbol=$3 WHERE workspace_id=$4 AND code=$5", [currency.code, currency.name, currency.symbol, workspaceId, previousCode]);
     if (!updated.rowCount) throw new Error("Currency not found.");
     await client.query("COMMIT");
   } catch (error) {
@@ -134,33 +144,33 @@ export async function updateCurrency(previousCode: string, input: Record<string,
   } finally { client.release(); }
 }
 
-export async function deleteCurrency(code: string) {
+export async function deleteCurrency(workspaceId: string, code: string) {
   await ensureDatabaseSchema();
   const [preferencesResult, accountsResult] = await Promise.all([
-    db.query("SELECT currency FROM preferences WHERE id=1"),
-    db.query("SELECT count(*)::int AS count FROM accounts WHERE currency=$1", [code]),
+    db.query("SELECT currency FROM workspace_preferences WHERE workspace_id=$1", [workspaceId]),
+    db.query("SELECT count(*)::int AS count FROM accounts WHERE workspace_id=$1 AND currency=$2", [workspaceId, code]),
   ]);
   if (preferencesResult.rows[0]?.currency === code) throw new Error("Choose another main currency before deleting this one.");
   if (Number(accountsResult.rows[0]?.count) > 0) throw new Error("Move or update accounts using this currency before deleting it.");
-  await db.query("DELETE FROM currencies WHERE code=$1", [code]);
+  await db.query("DELETE FROM currencies WHERE workspace_id=$1 AND code=$2", [workspaceId, code]);
 }
 
-export async function createAccount(input: Record<string, unknown>) {
+export async function createAccount(workspaceId: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
-  await db.query(`INSERT INTO accounts (name, institution, last_four, opening_balance, currency, color, kind)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)`, [input.name, input.institution ?? "", "", Number(input.startingBalance ?? 0), input.currency ?? "USD", input.color ?? "#573cf0", input.kind ?? "Checking"]);
+  await db.query(`INSERT INTO accounts (workspace_id, name, institution, last_four, opening_balance, currency, color, kind)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [workspaceId, input.name, input.institution ?? "", "", Number(input.startingBalance ?? 0), input.currency ?? "USD", input.color ?? "#573cf0", input.kind ?? "Checking"]);
 }
 
-export async function updateAccount(id: string, input: Record<string, unknown>) {
+export async function updateAccount(workspaceId: string, id: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
-  const existing = await db.query<{ currency: string }>("SELECT currency FROM accounts WHERE id=$1", [id]);
+  const existing = await db.query<{ currency: string }>("SELECT currency FROM accounts WHERE workspace_id=$1 AND id=$2", [workspaceId, id]);
   if (!existing.rowCount) throw new Error("Account not found.");
   const accountCurrency = lockedAccountCurrency(existing.rows[0].currency, input.currency);
-  await db.query(`UPDATE accounts SET name=$1, institution=$2, opening_balance=$3, currency=$4, color=$5, kind=$6, updated_at=now() WHERE id=$7`,
-    [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), accountCurrency, input.color ?? "#573cf0", input.kind ?? "Checking", id]);
+  await db.query(`UPDATE accounts SET name=$1, institution=$2, opening_balance=$3, currency=$4, color=$5, kind=$6, updated_at=now() WHERE workspace_id=$7 AND id=$8`,
+    [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), accountCurrency, input.color ?? "#573cf0", input.kind ?? "Checking", workspaceId, id]);
 }
 
-export async function createTransaction(input: Record<string, unknown>) {
+export async function createTransaction(workspaceId: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
   const type = String(input.type) as Transaction["type"];
   const rawAmount = Math.abs(Number(input.amount));
@@ -174,10 +184,10 @@ export async function createTransaction(input: Record<string, unknown>) {
     try {
       await client.query("BEGIN");
       const transferId = (await client.query("SELECT gen_random_uuid() AS id")).rows[0].id;
-      await client.query(`INSERT INTO transactions (occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, -$5, 'Transfer', $6, $7)`, [input.occurredOn, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
-      await client.query(`INSERT INTO transactions (occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, $5, 'Transfer', $6, $7)`, [input.occurredOn, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
+      await client.query(`INSERT INTO transactions (workspace_id, occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+        VALUES ($1, $2, $3, $4, $5, -$6, 'Transfer', $7, $8)`, [workspaceId, input.occurredOn, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
+      await client.query(`INSERT INTO transactions (workspace_id, occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+        VALUES ($1, $2, $3, $4, $5, $6, 'Transfer', $7, $8)`, [workspaceId, input.occurredOn, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -186,11 +196,11 @@ export async function createTransaction(input: Record<string, unknown>) {
     return;
   }
   const amount = type === "Expense" ? -rawAmount : rawAmount;
-  await db.query(`INSERT INTO transactions (occurred_on, description, note, account_id, cost_center_id, amount, type)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)`, [input.occurredOn, input.description, input.note ?? "", input.accountId, input.costCenterId || null, amount, type]);
+  await db.query(`INSERT INTO transactions (workspace_id, occurred_on, description, note, account_id, cost_center_id, amount, type)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [workspaceId, input.occurredOn, input.description, input.note ?? "", input.accountId, input.costCenterId || null, amount, type]);
 }
 
-export async function updateTransaction(id: string, input: Record<string, unknown>) {
+export async function updateTransaction(workspaceId: string, id: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
   const type = String(input.type) as Transaction["type"];
   const rawAmount = Math.abs(Number(input.amount));
@@ -198,7 +208,7 @@ export async function updateTransaction(id: string, input: Record<string, unknow
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const existing = await client.query("SELECT transfer_id FROM transactions WHERE id=$1 FOR UPDATE", [id]);
+    const existing = await client.query("SELECT transfer_id FROM transactions WHERE workspace_id=$1 AND id=$2 FOR UPDATE", [workspaceId, id]);
     if (!existing.rowCount) throw new Error("Transaction not found.");
     const existingTransferId = existing.rows[0].transfer_id as string | null;
     if (type === "Transfer") {
@@ -207,16 +217,16 @@ export async function updateTransaction(id: string, input: Record<string, unknow
       if (!sourceAccountId || !destinationAccountId) throw new Error("Choose both the source and destination accounts.");
       if (sourceAccountId === destinationAccountId) throw new Error("A transfer must use two different accounts.");
       const transferId = existingTransferId ?? (await client.query("SELECT gen_random_uuid() AS id")).rows[0].id;
-      if (existingTransferId) await client.query("DELETE FROM transactions WHERE transfer_id=$1", [transferId]);
-      await client.query(`INSERT INTO transactions (occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, -$5, 'Transfer', $6, $7)`, [input.occurredOn, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
-      await client.query(`INSERT INTO transactions (occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, $5, 'Transfer', $6, $7)`, [input.occurredOn, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
+      if (existingTransferId) await client.query("DELETE FROM transactions WHERE workspace_id=$1 AND transfer_id=$2", [workspaceId, transferId]);
+      await client.query(`INSERT INTO transactions (workspace_id, occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+        VALUES ($1, $2, $3, $4, $5, -$6, 'Transfer', $7, $8)`, [workspaceId, input.occurredOn, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
+      await client.query(`INSERT INTO transactions (workspace_id, occurred_on, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+        VALUES ($1, $2, $3, $4, $5, $6, 'Transfer', $7, $8)`, [workspaceId, input.occurredOn, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
     } else {
-      if (existingTransferId) await client.query("DELETE FROM transactions WHERE transfer_id=$1 AND id <> $2", [existingTransferId, id]);
+      if (existingTransferId) await client.query("DELETE FROM transactions WHERE workspace_id=$1 AND transfer_id=$2 AND id <> $3", [workspaceId, existingTransferId, id]);
       const amount = type === "Expense" ? -rawAmount : rawAmount;
-      await client.query(`UPDATE transactions SET occurred_on=$1, description=$2, note=$3, account_id=$4, cost_center_id=$5, amount=$6, type=$7, transfer_id=NULL, transfer_account_id=NULL, updated_at=now() WHERE id=$8`,
-        [input.occurredOn, input.description, input.note ?? "", input.accountId, input.costCenterId || null, amount, type, id]);
+      await client.query(`UPDATE transactions SET occurred_on=$1, description=$2, note=$3, account_id=$4, cost_center_id=$5, amount=$6, type=$7, transfer_id=NULL, transfer_account_id=NULL, updated_at=now() WHERE workspace_id=$8 AND id=$9`,
+        [input.occurredOn, input.description, input.note ?? "", input.accountId, input.costCenterId || null, amount, type, workspaceId, id]);
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -225,15 +235,15 @@ export async function updateTransaction(id: string, input: Record<string, unknow
   } finally { client.release(); }
 }
 
-export async function linkTransactionsAsTransfer(transactionId: string, counterpartTransactionId: string) {
+export async function linkTransactionsAsTransfer(workspaceId: string, transactionId: string, counterpartTransactionId: string) {
   await ensureDatabaseSchema();
   if (!transactionId || !counterpartTransactionId || transactionId === counterpartTransactionId) throw new Error("Choose a different transaction to link.");
   const client = await db.connect();
   try {
     await client.query("BEGIN");
     const rows = await client.query(`SELECT t.id, t.account_id, t.amount, t.type, t.transfer_id, a.currency
-      FROM transactions t JOIN accounts a ON a.id = t.account_id
-      WHERE t.id = ANY($1::uuid[]) FOR UPDATE OF t`, [[transactionId, counterpartTransactionId]]);
+      FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.workspace_id = t.workspace_id
+      WHERE t.workspace_id = $1 AND t.id = ANY($2::uuid[]) FOR UPDATE OF t`, [workspaceId, [transactionId, counterpartTransactionId]]);
     if (rows.rowCount !== 2) throw new Error("One of the transactions could not be found.");
     const [first, second] = rows.rows;
     if (first.type === "Transfer" || second.type === "Transfer" || first.transfer_id || second.transfer_id) throw new Error("Only unlinked income and expense transactions can be linked.");
@@ -246,7 +256,7 @@ export async function linkTransactionsAsTransfer(transactionId: string, counterp
     await client.query(`UPDATE transactions SET type='Transfer', transfer_id=$1,
       transfer_account_id=CASE WHEN id=$2 THEN $3 ELSE $4 END,
       cost_center_id=NULL, updated_at=now()
-      WHERE id = ANY($5::uuid[])`, [transferId, first.id, second.account_id, first.account_id, [first.id, second.id]]);
+      WHERE workspace_id = $5 AND id = ANY($6::uuid[])`, [transferId, first.id, second.account_id, first.account_id, workspaceId, [first.id, second.id]]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -254,29 +264,32 @@ export async function linkTransactionsAsTransfer(transactionId: string, counterp
   } finally { client.release(); }
 }
 
-export async function createCostCenter(input: Record<string, unknown>) {
+export async function createCostCenter(workspaceId: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
-  await db.query("INSERT INTO cost_centers (name, parent_id, color) VALUES ($1, $2, $3)", [input.name, input.parentId || null, input.color ?? "#573cf0"]);
+  await db.query("INSERT INTO cost_centers (workspace_id, name, parent_id, color) VALUES ($1, $2, $3, $4)", [workspaceId, input.name, input.parentId || null, input.color ?? "#573cf0"]);
 }
 
-export async function deleteCostCenter(id: string) { await ensureDatabaseSchema(); await db.query("DELETE FROM cost_centers WHERE id=$1", [id]); }
+export async function deleteCostCenter(workspaceId: string, id: string) { await ensureDatabaseSchema(); await db.query("DELETE FROM cost_centers WHERE workspace_id=$1 AND id=$2", [workspaceId, id]); }
 
-export async function savePreferences(input: Preferences) {
+export async function savePreferences(workspaceId: string, input: Preferences) {
   await ensureDatabaseSchema();
-  await db.query(`INSERT INTO preferences (id, currency, timezone, locale, price_format) VALUES (1,$1,$2,$3,$4)
-    ON CONFLICT (id) DO UPDATE SET currency=$1, timezone=$2, locale=$3, price_format=$4, updated_at=now()`,
-    [input.currency, input.timezone, input.locale, input.priceFormat]);
+  await db.query(`INSERT INTO workspace_preferences (workspace_id, currency, timezone, locale, price_format) VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (workspace_id) DO UPDATE SET currency=$2, timezone=$3, locale=$4, price_format=$5, updated_at=now()`,
+    [workspaceId, input.currency, input.timezone, input.locale, input.priceFormat]);
 }
 
-export async function deleteAllData() {
+export async function deleteAllData(workspaceId: string) {
   await ensureDatabaseSchema();
   const client = await db.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [IMPORT_STORAGE_ADVISORY_LOCK]);
-    await client.query("TRUNCATE import_documents, transactions, cost_centers, accounts RESTART IDENTITY CASCADE");
-    // Keep the database rollback-capable until private originals are gone.
-    await clearImportStorage();
+    const files = await client.query<{ storage_key: string }>("SELECT storage_key FROM import_documents WHERE workspace_id=$1", [workspaceId]);
+    for (const file of files.rows) await deleteStoredFile(String(file.storage_key));
+    await client.query("DELETE FROM transactions WHERE workspace_id=$1", [workspaceId]);
+    await client.query("DELETE FROM import_documents WHERE workspace_id=$1", [workspaceId]);
+    await client.query("DELETE FROM cost_centers WHERE workspace_id=$1", [workspaceId]);
+    await client.query("DELETE FROM accounts WHERE workspace_id=$1", [workspaceId]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

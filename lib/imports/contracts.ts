@@ -59,6 +59,6 @@ export type ImportCandidateInput = ImportSource & {
   candidate: TransactionCandidate;
 };
 
-export type ImportJobData = { batchId: string };
+export type ImportJobData = { batchId: string; workspaceId: string };
 
 export const IMPORT_QUEUE = "import.process";
