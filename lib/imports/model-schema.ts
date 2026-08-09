@@ -1,9 +1,8 @@
 import { z } from "zod";
 
-// Ollama compiles its `format` JSON Schema into a llama.cpp grammar. That
-// compiler intentionally supports only a subset of JSON Schema, so semantic
-// constraints stay in the authoritative Zod schema and are applied after the
-// model responds. The generation schema only constrains JSON shape and enums.
+// Providers vary in the JSON Schema features they accept for generated
+// responses. Keep generation focused on JSON shape and enums; Zod remains the
+// authoritative validator for semantic constraints after generation.
 const postGenerationValidationKeywords = new Set([
   "default",
   "examples",
@@ -43,7 +42,7 @@ function removePostGenerationConstraints(value: unknown): unknown {
   );
 }
 
-export function ollamaGenerationSchema<T>(schema: z.ZodType<T>) {
+export function modelGenerationSchema<T>(schema: z.ZodType<T>) {
   const jsonSchema = z.toJSONSchema(schema, { target: "draft-7" });
   return removePostGenerationConstraints(jsonSchema) as Record<string, unknown>;
 }

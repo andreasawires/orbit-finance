@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/database";
-import { importConfig } from "@/lib/imports/config";
+import { getModelProviderConfig, importConfig, isRemoteModelProviderConfigured } from "@/lib/imports/config";
 import { acquireImportStorageReadLock } from "@/lib/imports/locks";
 import { presentImportBatchSummary, presentImportDetail } from "@/lib/imports/presentation";
 import { enqueueImport } from "@/lib/imports/queue";
@@ -63,6 +63,7 @@ export async function GET(request: NextRequest) {
         maxImageBytes: importConfig.maxImageBytes,
         maxPdfPages: importConfig.maxPdfPages,
       },
+      remoteModelEnabled: isRemoteModelProviderConfigured(),
     });
   } catch (error) {
     return failure(error);
@@ -77,6 +78,7 @@ export async function POST(request: NextRequest) {
   let releaseStorageGuard: (() => Promise<void>) | null = null;
   try {
     const workspace = await requireRequestWorkspace(request);
+    const modelProvider = getModelProviderConfig();
     releaseStorageGuard = await acquireImportStorageReadLock();
     const accountId = request.headers.get("x-account-id")?.trim() ?? "";
     if (!uuid.test(accountId)) throw new Error("A valid destination account is required.");
@@ -125,7 +127,7 @@ export async function POST(request: NextRequest) {
       parserVersion: stored.detected.kind === "pdf" ? "1.11.2" : stored.detected.kind === "csv" ? "6.1.0" : "0.35.3",
       extractorName: "orbit-local-import-worker",
       extractorVersion: "1",
-      modelName: importConfig.model,
+      modelName: modelProvider.model,
       promptVersion: "transactions-v1",
       settings: {
         maxPdfPages: importConfig.maxPdfPages,
@@ -133,7 +135,7 @@ export async function POST(request: NextRequest) {
         maxCsvColumns: importConfig.maxCsvColumns,
         maxImagePixels: importConfig.maxImagePixels,
         maxRenderedPixels: importConfig.maxRenderedPixels,
-        modelContext: importConfig.modelContext,
+        modelMaxInputChars: importConfig.maxModelInputChars,
       },
     });
     batchWasRegistered = true;

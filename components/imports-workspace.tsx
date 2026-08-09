@@ -340,6 +340,7 @@ async function fetchBatches(workspaceFetch: (input: RequestInfo | URL, init?: Re
   return {
     batches: getBatches(body),
     limits: isRecord(body) ? normalizeLimits(body.limits) : DEFAULT_LIMITS,
+    remoteModelEnabled: isRecord(body) && body.remoteModelEnabled === true,
   };
 }
 
@@ -656,6 +657,7 @@ export function ImportsWorkspace() {
   const [uploadError, setUploadError] = useState("");
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [limits, setLimits] = useState<ImportLimits>(DEFAULT_LIMITS);
+  const [remoteModelEnabled, setRemoteModelEnabled] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [reviewPage, setReviewPage] = useState(1);
   const [detail, setDetail] = useState<ImportDetail | null>(null);
@@ -674,6 +676,7 @@ export function ImportsWorkspace() {
       const next = await fetchBatches(workspaceFetch);
       setBatches(next.batches);
       setLimits(next.limits);
+      setRemoteModelEnabled(next.remoteModelEnabled);
       setSelectedId((current) => current || next.batches[0]?.id || "");
       setActionError("");
     } catch (caught) {
@@ -716,6 +719,7 @@ export function ImportsWorkspace() {
         if (!active) return;
         setBatches(next.batches);
         setLimits(next.limits);
+        setRemoteModelEnabled(next.remoteModelEnabled);
         setSelectedId((current) => current || next.batches[0]?.id || "");
         setActionError("");
       })
@@ -921,12 +925,12 @@ export function ImportsWorkspace() {
   };
 
   return <div className="page imports-page">
-    <div className="page-heading"><div><div className="eyebrow">Private document intake</div><h1>Imports</h1><p>Turn statements into reviewable transaction drafts, entirely on your machine.</p></div></div>
+    <div className="page-heading"><div><div className="eyebrow">Document intake</div><h1>Imports</h1><p>Turn statements into reviewable transaction drafts.</p></div></div>
 
     {financeError && <div className="data-error"><strong>Could not connect to PostgreSQL.</strong><span>{financeError}</span><code>docker compose up -d</code></div>}
 
     <section className="panel import-uploader">
-      <div className="import-uploader-copy"><span><UploadCloud size={22} /></span><div><h2>Import a statement</h2><p>PDFs are inspected locally. Scanned pages and images are converted by the local vision model before anything reaches your review queue.</p></div></div>
+      <div className="import-uploader-copy"><span><UploadCloud size={22} /></span><div><h2>Import a statement</h2><p>PDFs are inspected locally. Scanned pages and images are converted into reviewable transaction candidates.</p></div></div>
       <div className="import-upload-controls">
         <label className="import-account-select"><span>Destination account</span><select value={selectedAccountId} onChange={(event) => setAccountId(event.target.value)} disabled={accountsLoading || uploading || !accounts.length}><option value="" disabled>{accountsLoading ? "Loading accounts…" : "Select an account"}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label>
         <div className={`import-dropzone ${dragging ? "dragging" : ""} ${pendingFile ? "has-file" : ""} ${!accounts.length ? "disabled" : ""}`} role="button" tabIndex={accounts.length && !uploading ? 0 : -1} onKeyDown={dropKey} onClick={() => { if (accounts.length && !uploading) fileInputRef.current?.click(); }} onDragEnter={(event) => { event.preventDefault(); if (!uploading) setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={drop}>
@@ -934,6 +938,7 @@ export function ImportsWorkspace() {
           {pendingFile ? <><span className={`import-file-icon ${fileKind(pendingFile.name, pendingFile.type)}`}><ImportFileIcon filename={pendingFile.name} mimeType={pendingFile.type} size={21} /></span><div><strong>{pendingFile.name}</strong><small>{formatBytes(pendingFile.size)} · ready for {activeAccount?.name || "the selected account"}</small></div><button onClick={(event) => { event.stopPropagation(); setPendingFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }} aria-label="Remove selected file"><X size={16} /></button></> : <><UploadCloud size={23} /><div><strong>Drop a statement here, or choose a file</strong><small>PDF up to {formatBytes(limits.pdfBytes)} / {limits.pdfPages} pages · CSV up to {formatBytes(limits.csvBytes)} · image up to {formatBytes(limits.imageBytes)}</small></div></>}
         </div>
         {uploading && <div className="import-upload-progress"><span style={{ width: `${uploadProgress}%` }} /><small>{uploadProgress}% uploaded</small></div>}
+        {remoteModelEnabled && <div className="import-remote-notice"><AlertCircle size={15} />This configuration sends statement contents to an external AI provider for conversion.</div>}
         {uploadError && <div className="import-upload-error"><AlertCircle size={15} />{uploadError}</div>}
         {!accountsLoading && !accounts.length && <div className="import-upload-error"><AlertCircle size={15} />Add a financial account before importing a statement. <Link href="/accounts">Go to accounts</Link></div>}
         <button className="button primary import-upload-button" disabled={!pendingFile || !selectedAccountId || uploading} onClick={upload}>{uploading ? <LoaderCircle className="spin" size={17} /> : <UploadCloud size={17} />} {uploading ? "Uploading…" : "Upload and process"}</button>

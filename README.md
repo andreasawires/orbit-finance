@@ -1,58 +1,42 @@
 # Orbit Finance
 
-Orbit Finance is a local-first Next.js finance app backed by PostgreSQL 17. Financial documents and model requests stay on your machine.
+Orbit Finance is a local-first Next.js finance app backed by PostgreSQL 17. Financial documents stay on your machine unless you explicitly configure a remote model provider.
 
 ## Workspaces
 
 Every account, transaction, cost center, currency, preference, report, and import belongs to one workspace. Use the workspace selector in the sidebar to switch datasets, and use **Settings → Workspaces** to create, rename, archive, restore, or permanently delete a workspace. Existing installations are migrated into a default **Personal** workspace when `npm run db:migrate` runs.
 
-## Local document-import pipeline
+## Document-import pipeline
 
 The Imports workspace accepts PDF, CSV, JPEG, PNG, and WebP statements:
 
 1. The web app streams the upload into private local storage and records its SHA-256 digest.
 2. PostgreSQL and `pg-boss` queue the document by batch ID; no Redis or external object store is required.
 3. `@firecrawl/pdf-inspector` extracts native PDF text. Only pages marked as needing visual reading are rendered.
-4. A local `Qwen3-VL-4B-Instruct` runtime converts PDF text or page images into structured transaction candidates. Known CSV layouts are handled deterministically and do not invoke the model.
+4. A configured OpenAI Chat Completions-compatible model converts PDF text or page images into structured transaction candidates. Known CSV layouts are handled deterministically and do not invoke the model.
 5. Code validates dates, signs, amounts, currencies, and ledger compatibility.
 6. Every candidate must be approved or rejected in the UI. Final insertion and source provenance are committed in one repeat-safe database transaction.
 
-The model process receives only the current page text/image plus a short first-page context for later statement pages. It has no document volume or database credentials. Originals remain in the private import volume so reviewers can open the exact source; the app's **Delete all financial data** action removes those originals as well as their database records.
+The model receives only the current page text/image plus a short first-page context for later statement pages. Originals remain in the private import volume so reviewers can open the exact source; the app's **Delete all financial data** action removes those originals as well as their database records.
 
 ## Run with Docker
 
-### Native Ollama (recommended on macOS / Apple Silicon)
+### Model provider
 
-Install [Ollama](https://ollama.com), then install the model once:
-
-```bash
-ollama pull qwen3-vl:4b-instruct
-docker compose up -d --build
-```
-
-Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. The web UI binds to all network interfaces by default; set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep it on this machine only. PostgreSQL and Ollama remain bound to loopback. Ollama runs natively on the Mac; the worker reaches it at `host.docker.internal:11434`.
-
-`pdf-inspector` currently publishes a Linux x64 native binary but not a Linux ARM64 one, so the app containers default to `linux/amd64` on Apple Silicon. The model remains native and does the expensive inference work outside Docker.
-
-### Fully Dockerized Ollama (CPU)
-
-This is the self-contained option for any Docker host. It is slower than a native GPU runtime, but requires no host Ollama installation. The first start downloads the configured model into the persistent `orbit-ollama-data` volume.
+Configure any endpoint that implements the OpenAI Chat Completions API and supports your chosen model's text and image inputs. Copy `.env.example` to `.env` and set:
 
 ```bash
-OLLAMA_BASE_URL_DOCKER=http://ollama-cpu:11434 \
-  docker compose --profile ollama-cpu up -d --build
+MODEL_BASE_URL=https://provider.example/v1
+MODEL_API_KEY=
+MODEL_NAME=your-vision-model
+MODEL_ALLOW_REMOTE=true
 ```
 
-### Fully Dockerized Ollama (Linux + NVIDIA)
+`MODEL_BASE_URL` must end in `/v1`; remote endpoints must use HTTPS and require `MODEL_ALLOW_REMOTE=true`. This explicitly acknowledges that statement content is sent to that provider. Local loopback endpoints do not require an API key or the acknowledgement. The importer tries JSON Schema structured output first and automatically falls back to JSON mode when the provider does not support schemas.
 
-Install the NVIDIA Container Toolkit, then run the GPU profile. Like the CPU profile, it automatically downloads the model on first start.
+Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by default) and `MODEL_MAX_INPUT_CHARS` to bound extracted statement text. Increase the timeout for slower vision models or cold starts. `MODEL_STRUCTURED_OUTPUT=auto` tries JSON Schema first, then caches a JSON-mode fallback if the endpoint rejects schema output; set it to `json_schema` or `json_object` to require one mode.
 
-```bash
-OLLAMA_BASE_URL_DOCKER=http://ollama-gpu:11434 \
-  docker compose --profile ollama-gpu up -d --build
-```
-
-Use exactly one Ollama mode at a time. The Ollama API stays bound to loopback in the Docker modes as well. To use a different local model, set `VISION_MODEL` consistently for the app and the Ollama service before the command.
+After configuration, run `docker compose up -d --build`. Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. Set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep the web UI on this machine.
 
 ## Run the app and worker from source
 
@@ -72,7 +56,7 @@ npm run worker
 
 The development server listens on all interfaces, so it is also available at `http://<your-computer-lan-ip>:3000`. If you use a host firewall, allow inbound TCP port 3000 only from your local network.
 
-For this mode, `OLLAMA_BASE_URL=http://127.0.0.1:11434`. The default database connection is `postgresql://orbit:orbit@localhost:5433/orbit_finance`.
+For this mode, configure `MODEL_BASE_URL`, `MODEL_NAME`, and (when needed) `MODEL_API_KEY` in `.env.local`. The default database connection is `postgresql://orbit:orbit@localhost:5433/orbit_finance`.
 
 ## Import limits
 

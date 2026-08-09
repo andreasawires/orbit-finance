@@ -6,7 +6,7 @@ import { parse } from "csv-parse/sync";
 import { importConfig, type ImportFileKind } from "@/lib/imports/config";
 import type { CsvMapping, ImportCandidateInput, TransactionCandidate } from "@/lib/imports/contracts";
 import { normalizeImage, withRenderedPdfPage } from "@/lib/imports/image";
-import { convertWithLocalModel, inferCsvMapping } from "@/lib/imports/model";
+import { convertWithModel, inferCsvMapping } from "@/lib/imports/model";
 import { readStoredFile, resolveStorageKey } from "@/lib/imports/storage";
 
 type ExtractRequest = {
@@ -350,14 +350,14 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
   for (const page of extracted.pages) {
     const pageNumber = page.page + 1;
     const result = page.needsOcr
-      ? await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithLocalModel({
+      ? await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
           accountCurrency: request.accountCurrency,
           sourceLabel: `PDF page ${pageNumber} (visual source)`,
           content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
           statementContext: pageNumber > 1 ? statementContext : undefined,
           imagePath,
         }))
-      : await convertWithLocalModel({
+      : await convertWithModel({
           accountCurrency: request.accountCurrency,
           sourceLabel: `PDF page ${pageNumber} (native text)`,
           content: page.markdown,
@@ -396,7 +396,7 @@ async function extractImage(request: ExtractRequest, onStage?: (stage: ExtractSt
   try {
     await normalizeImage(resolveStorageKey(request.storageKey), normalizedPath);
     await onStage?.("converting");
-    const result = await convertWithLocalModel({
+    const result = await convertWithModel({
       accountCurrency: request.accountCurrency,
       sourceLabel: "uploaded statement or receipt image",
       content: "Read all visible financial transaction rows from this image.",

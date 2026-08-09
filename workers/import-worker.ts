@@ -4,7 +4,6 @@ import { db } from "@/lib/database";
 import { importConfig } from "@/lib/imports/config";
 import { IMPORT_QUEUE, type ImportJobData, transactionCandidateSchema } from "@/lib/imports/contracts";
 import { extractImport } from "@/lib/imports/extract";
-import { assertLocalModelAvailable } from "@/lib/imports/model";
 import { enqueueImport, getImportQueue } from "@/lib/imports/queue";
 import {
   getImportBatch,
@@ -113,7 +112,6 @@ async function processImport(job: Job<ImportJobData>) {
   if (job.signal.aborted) throw new Error("Import job was cancelled before extraction.");
 
   try {
-    if (work.batch.sourceKind !== "csv") await assertLocalModelAvailable();
     let conversionStarted = false;
     const result = await extractImport({
       storageKey: work.document.storageKey,

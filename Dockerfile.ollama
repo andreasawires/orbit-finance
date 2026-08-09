@@ -1,6 +1,0 @@
-ARG OLLAMA_IMAGE=ollama/ollama:latest
-FROM ${OLLAMA_IMAGE}
-
-COPY --chmod=755 scripts/ollama-entrypoint.sh /usr/local/bin/orbit-ollama
-
-ENTRYPOINT ["/usr/local/bin/orbit-ollama"]

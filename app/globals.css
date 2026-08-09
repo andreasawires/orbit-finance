@@ -284,6 +284,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 .import-upload-progress small { position: absolute; right: 0; top: 9px; color: var(--muted); font-size: 10px; }
 .import-upload-error { grid-column: 1/-1; display: flex; align-items: center; gap: 7px; color: var(--red); font-size: 12px; }
 .import-upload-error a { color: var(--purple); font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
+.import-remote-notice { grid-column: 1/-1; display: flex; align-items: flex-start; gap: 7px; padding: 9px 10px; border-radius: 9px; color: #94610e; background: color-mix(in srgb, #d89b32, transparent 88%); font-size: 11px; line-height: 1.4; }
 
 .imports-layout { display: grid; grid-template-columns: 285px minmax(0, 1fr); align-items: start; gap: 18px; }
 .import-batches { overflow: hidden; position: sticky; top: calc(var(--topbar) + 22px); max-height: calc(100vh - var(--topbar) - 44px); display: flex; flex-direction: column; }
@@ -432,7 +433,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 @media (max-width: 700px) {
   .import-uploader { padding: 17px; }
   .import-upload-controls { grid-template-columns: 1fr; }
-  .import-account-select, .import-upload-error, .import-upload-progress { grid-column: 1; }
+  .import-account-select, .import-upload-error, .import-upload-progress, .import-remote-notice { grid-column: 1; }
   .import-upload-button { width: 100%; height: 44px; }
   .import-review-summary { grid-template-columns: 1fr 1fr; }
   .import-original-link { margin-left: 57px; }
