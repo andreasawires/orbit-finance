@@ -81,6 +81,29 @@ test("remote model providers require an explicit acknowledgement", () => {
   }
 });
 
+test("the Docker host gateway is treated as a local model provider", () => {
+  const previous = {
+    baseUrl: process.env.MODEL_BASE_URL,
+    name: process.env.MODEL_NAME,
+    allowRemote: process.env.MODEL_ALLOW_REMOTE,
+  };
+  process.env.MODEL_BASE_URL = "http://host.docker.internal:11434/v1";
+  process.env.MODEL_NAME = "qwen3-vl:4b-instruct";
+  delete process.env.MODEL_ALLOW_REMOTE;
+  try {
+    const config = getModelProviderConfig();
+    assert.equal(config.isRemote, false);
+    assert.equal(config.apiKey, null);
+  } finally {
+    if (previous.baseUrl === undefined) delete process.env.MODEL_BASE_URL;
+    else process.env.MODEL_BASE_URL = previous.baseUrl;
+    if (previous.name === undefined) delete process.env.MODEL_NAME;
+    else process.env.MODEL_NAME = previous.name;
+    if (previous.allowRemote === undefined) delete process.env.MODEL_ALLOW_REMOTE;
+    else process.env.MODEL_ALLOW_REMOTE = previous.allowRemote;
+  }
+});
+
 test("model conversion sends Chat Completions JSON schema requests with image data", async () => {
   const previous = {
     baseUrl: process.env.MODEL_BASE_URL,

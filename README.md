@@ -34,6 +34,8 @@ MODEL_ALLOW_REMOTE=true
 
 `MODEL_BASE_URL` must end in `/v1`; remote endpoints must use HTTPS and require `MODEL_ALLOW_REMOTE=true`. This explicitly acknowledges that statement content is sent to that provider. Local loopback endpoints do not require an API key or the acknowledgement. The importer tries JSON Schema structured output first and automatically falls back to JSON mode when the provider does not support schemas.
 
+For Ollama running on the Docker host, use `MODEL_BASE_URL=http://host.docker.internal:11434/v1`. The Compose services map this hostname to the host gateway, so it is treated as a local provider and does not require HTTPS or `MODEL_ALLOW_REMOTE=true`.
+
 Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by default) and `MODEL_MAX_INPUT_CHARS` to bound extracted statement text. Increase the timeout for slower vision models or cold starts. `MODEL_STRUCTURED_OUTPUT=auto` tries JSON Schema first, then caches a JSON-mode fallback if the endpoint rejects schema output; set it to `json_schema` or `json_object` to require one mode.
 
 After configuration, run `docker compose up -d --build`. Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. Set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep the web UI on this machine.

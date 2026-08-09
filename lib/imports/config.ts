@@ -32,7 +32,10 @@ export type ModelProviderConfig = {
   isRemote: boolean;
 };
 
-const localModelHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+// Docker Compose maps this hostname to the host gateway for the importer
+// containers. It is therefore a local endpoint, like loopback, rather than a
+// remote provider to which statement data would be disclosed.
+const localModelHosts = new Set(["localhost", "127.0.0.1", "::1", "host.docker.internal"]);
 
 function requiredEnvironment(name: string) {
   const value = process.env[name]?.trim();
