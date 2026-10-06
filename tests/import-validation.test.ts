@@ -4,7 +4,7 @@ import { mkdir, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { getModelProviderConfig, importConfig } from "@/lib/imports/config";
-import { modelTransactionsSchema, reviewTransactionCandidateSchema, transactionCandidateSchema, type TransactionCandidate } from "@/lib/imports/contracts";
+import { modelTransactionsSchema, pagedModelTransactionsSchema, reviewTransactionCandidateSchema, transactionCandidateSchema, type TransactionCandidate } from "@/lib/imports/contracts";
 import { extractImport } from "@/lib/imports/extract";
 import { detectFile } from "@/lib/imports/file-types";
 import { modelGenerationSchema } from "@/lib/imports/model-schema";
@@ -54,6 +54,17 @@ test("model providers receive a structural schema while Zod retains semantic val
       ...candidate({ amount: "1.001", currency: "EURO" }),
       sourceEvidence: "row",
     }],
+    warnings: [],
+  }).success, false);
+});
+
+test("batched PDF model results require a source page for every transaction", () => {
+  assert.equal(pagedModelTransactionsSchema.safeParse({
+    transactions: [{ ...candidate(), sourceEvidence: "Coffee -42.50", sourcePage: 2 }],
+    warnings: [],
+  }).success, true);
+  assert.equal(pagedModelTransactionsSchema.safeParse({
+    transactions: [{ ...candidate(), sourceEvidence: "Coffee -42.50" }],
     warnings: [],
   }).success, false);
 });

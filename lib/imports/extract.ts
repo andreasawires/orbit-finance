@@ -347,33 +347,20 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
   const pdfPath = resolveStorageKey(request.storageKey);
   let statementContext = shortStatementContext(extracted.pages[0]?.markdown ?? "");
   await onStage?.("converting");
-  for (const page of extracted.pages) {
-    const pageNumber = page.page + 1;
-    const result = page.needsOcr
-      ? await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
-          accountCurrency: request.accountCurrency,
-          sourceLabel: `PDF page ${pageNumber} (visual source)`,
-          content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
-          statementContext: pageNumber > 1 ? statementContext : undefined,
-          imagePath,
-        }))
-      : await convertWithModel({
-          accountCurrency: request.accountCurrency,
-          sourceLabel: `PDF page ${pageNumber} (native text)`,
-          content: page.markdown,
-          statementContext: pageNumber > 1 ? statementContext : undefined,
-        });
-    if (pageNumber === 1 && !statementContext) {
-      statementContext = contextFromFirstPageCandidates(result.transactions);
-    }
-    warnings.push(...result.warnings.map((warning) => `Page ${pageNumber}: ${warning}`));
+  const addResult = (result: Awaited<ReturnType<typeof convertWithModel>>, pageNumbers: number[]) => {
+    const pageSet = new Set(pageNumbers);
+    const pageText = new Map(extracted.pages.map((page) => [page.page + 1, normalizeEvidence(page.markdown ?? "")]));
+    warnings.push(...result.warnings.map((warning) => `Pages ${pageNumbers.join(", ")}: ${warning}`));
     if (!result.transactions.length) {
-      warnings.push(`Page ${pageNumber}: No transaction candidates were returned; verify this page during review.`);
+      warnings.push(`Pages ${pageNumbers.join(", ")}: No transaction candidates were returned; verify these pages during review.`);
     }
-    const normalizedPage = normalizeEvidence(page.markdown ?? "");
-    result.transactions.forEach(({ sourceEvidence, ...candidate }, index) => {
+    result.transactions.forEach(({ sourceEvidence, sourcePage, ...candidate }, index) => {
+      const pageNumber = sourcePage ?? pageNumbers[0]!;
+      if (!pageSet.has(pageNumber)) {
+        throw new Error(`Model returned source page ${pageNumber}, which was not included in this request.`);
+      }
       const normalizedSourceEvidence = normalizeEvidence(sourceEvidence);
-      const evidenceVerified = normalizedSourceEvidence.length >= 3 && normalizedPage.includes(normalizedSourceEvidence);
+      const evidenceVerified = normalizedSourceEvidence.length >= 3 && (pageText.get(pageNumber)?.includes(normalizedSourceEvidence) ?? false);
       if (!evidenceVerified) {
         warnings.push(`Page ${pageNumber}, candidate ${index + 1}: sourceEvidence could not be verified against the page's native text.`);
         candidate.confidence = Math.min(candidate.confidence, 0.75);
@@ -385,6 +372,40 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
         candidate,
       });
     });
+  };
+
+  for (let pageIndex = 0; pageIndex < extracted.pages.length;) {
+    const page = extracted.pages[pageIndex]!;
+    const pageNumber = page.page + 1;
+    if (page.needsOcr) {
+      const result = await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
+        accountCurrency: request.accountCurrency,
+        sourceLabel: `PDF page ${pageNumber} (visual source)`,
+        content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
+        statementContext: pageNumber > 1 ? statementContext : undefined,
+        imagePath,
+      }));
+      if (pageNumber === 1 && !statementContext) statementContext = contextFromFirstPageCandidates(result.transactions);
+      addResult(result, [pageNumber]);
+      pageIndex += 1;
+      continue;
+    }
+
+    const nativePages = [] as typeof extracted.pages;
+    while (pageIndex < extracted.pages.length && !extracted.pages[pageIndex]!.needsOcr) {
+      nativePages.push(extracted.pages[pageIndex]!);
+      pageIndex += 1;
+    }
+    const pageNumbers = nativePages.map((nativePage) => nativePage.page + 1);
+    const result = await convertWithModel({
+      accountCurrency: request.accountCurrency,
+      sourceLabel: `PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)} (native text)`,
+      // convertWithModel enforces MODEL_MAX_INPUT_CHARS and only splits this
+      // combined source when the configured limit is exceeded.
+      content: nativePages.map((nativePage) => `[PDF page ${nativePage.page + 1}]\n${nativePage.markdown}`).join("\n\n"),
+      requireSourcePage: true,
+    });
+    addResult(result, pageNumbers);
   }
   if (!candidates.length) throw new Error("No transaction rows could be extracted from the PDF.");
   return { pageCount: extracted.pages.length, candidates, warnings };

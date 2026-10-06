@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { getModelProviderConfig, importConfig, type ModelProviderConfig } from "@/lib/imports/config";
-import { csvMappingSchema, modelTransactionsSchema, type CsvMapping, type ModelTransaction } from "@/lib/imports/contracts";
+import { csvMappingSchema, modelTransactionsSchema, pagedModelTransactionsSchema, type CsvMapping, type ModelTransaction } from "@/lib/imports/contracts";
 import { modelGenerationSchema } from "@/lib/imports/model-schema";
 
 type ConvertRequest = {
@@ -10,6 +10,7 @@ type ConvertRequest = {
   sourceLabel: string;
   statementContext?: string;
   imagePath?: string;
+  requireSourcePage?: boolean;
 };
 
 const systemPrompt = `You convert financial statement source material into transaction candidates.
@@ -23,6 +24,7 @@ Rules:
 - Preserve the transaction currency. Use the account currency only when the source has no conflicting currency.
 - Preserve the source description without translating it. A short cleanup is allowed, but do not add facts.
 - sourceEvidence must be a short verbatim fragment identifying the row.
+- When the source contains [PDF page N] labels, return sourcePage: N for every transaction.
 - Return every visible ledger row whose date and amount are readable. Keep uncertain rows as low-confidence candidates and explain the uncertainty in warnings; do not silently omit them because a description, currency, or direction is unclear.
 - If a visible row's date or amount is genuinely unreadable, do not invent it and do not create a schema-invalid placeholder. Add a warning identifying the row by a short visible fragment instead.
 - Confidence reflects extraction certainty. Use lower confidence when a row needs human verification.
@@ -206,7 +208,13 @@ Default account currency: ${request.accountCurrency}
 ${request.statementContext ? `Statement context from the first page (context only; do not extract rows from it):\n${request.statementContext}\n` : ""}
 
 ${request.content}`;
-  return requestStructured({ schema: modelTransactionsSchema, system: systemPrompt, prompt, images, retryFeedback });
+  return requestStructured({
+    schema: request.requireSourcePage ? pagedModelTransactionsSchema : modelTransactionsSchema,
+    system: systemPrompt,
+    prompt,
+    images,
+    retryFeedback,
+  });
 }
 
 export async function inferCsvMapping(headers: string[], sampleRows: Record<string, string>[]): Promise<CsvMapping> {

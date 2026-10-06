@@ -23,11 +23,20 @@ export const reviewTransactionCandidateSchema = transactionCandidateSchema.exten
 
 export const modelTransactionSchema = transactionCandidateSchema.extend({
   sourceEvidence: z.string().max(1_000).default(""),
+  // A page is supplied when multiple PDF pages share one model request. It is
+  // optional for single-source requests such as an uploaded image.
+  sourcePage: z.number().int().positive().optional(),
 });
 
 export const modelTransactionsSchema = z.object({
   transactions: z.array(modelTransactionSchema).max(1_000),
   warnings: z.array(z.string().max(500)).max(100).default([]),
+});
+
+export const pagedModelTransactionsSchema = modelTransactionsSchema.extend({
+  transactions: z.array(modelTransactionSchema.extend({
+    sourcePage: z.number().int().positive(),
+  })).max(1_000),
 });
 
 export const csvMappingSchema = z.object({

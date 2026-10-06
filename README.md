@@ -36,7 +36,7 @@ MODEL_ALLOW_REMOTE=true
 
 For Ollama running on the Docker host, use `MODEL_BASE_URL=http://host.docker.internal:11434/v1`. The Compose services map this hostname to the host gateway, so it is treated as a local provider and does not require HTTPS or `MODEL_ALLOW_REMOTE=true`.
 
-Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by default) and `MODEL_MAX_INPUT_CHARS` to bound extracted statement text. Increase the timeout for slower vision models or cold starts. `MODEL_STRUCTURED_OUTPUT=auto` tries JSON Schema first, then caches a JSON-mode fallback if the endpoint rejects schema output; set it to `json_schema` or `json_object` to require one mode.
+Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by default). `MODEL_MAX_INPUT_CHARS` bounds the combined native-PDF text sent to the model in one request: consecutive text pages are combined and split only when this limit is exceeded. Set it below the model's usable context window, leaving room for the importer prompt, JSON schema, and response. OCR/image pages are handled separately. `MODEL_STRUCTURED_OUTPUT=auto` tries JSON Schema first, then caches a JSON-mode fallback if the endpoint rejects schema output; set it to `json_schema` or `json_object` to require one mode.
 
 After configuration, run `docker compose up -d --build`. Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. Set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep the web UI on this machine.
 
