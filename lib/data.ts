@@ -12,8 +12,8 @@ export type Account = {
 
 export type Transaction = {
   id: string;
-  occurredOn: string;
-  date: string;
+  /** UTC instant (ISO 8601). Display it with the workspace timezone via lib/time. */
+  occurredAt: string;
   merchant: string;
   detail: string;
   costCenter: string;

@@ -32,6 +32,8 @@ import {
 import { flattenCostCenters, type CostCenter } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
 import { useWorkspace } from "@/components/workspace-provider";
+import { TimeZoneSelect } from "@/components/time-zone-select";
+import { isValidTimeZone } from "@/lib/time";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -40,6 +42,7 @@ type ImportBatch = {
   accountId: string;
   accountName: string;
   status: string;
+  statementTimezone: string;
   originalFilename: string;
   mimeType: string;
   byteSize: number;
@@ -140,6 +143,7 @@ const DEFAULT_LIMITS: ImportLimits = {
   pdfPages: 50,
 };
 
+const STATEMENT_TIMEZONE_KEY = "orbit-statement-timezone";
 const REVIEW_PAGE_SIZE = 100;
 
 const PROCESSING_STATUSES = new Set([
@@ -176,6 +180,7 @@ function normalizeBatch(value: unknown): ImportBatch | null {
     accountId: asString(value.accountId ?? value.account_id),
     accountName: asString(value.accountName ?? value.account_name),
     status: normalizeStatus(value.status),
+    statementTimezone: asString(value.statementTimezone ?? value.statement_timezone, "UTC"),
     originalFilename: asString(value.originalFilename ?? value.original_filename ?? value.fileName ?? value.filename, "Untitled import"),
     mimeType: asString(value.mimeType ?? value.mime_type ?? value.mediaType ?? value.media_type),
     byteSize: asNumber(value.byteSize ?? value.byte_size ?? value.sizeBytes ?? value.size_bytes),
@@ -571,6 +576,8 @@ function BatchDetail({
   onPageChange,
   onRetry,
   onOpenOriginal,
+  statementTimezone,
+  onStatementTimezoneChange,
 }: {
   detail: ImportDetail | null;
   loading: boolean;
@@ -583,6 +590,8 @@ function BatchDetail({
   onPageChange: (page: number) => void;
   onRetry: () => void;
   onOpenOriginal: ((page: number | null) => void) | null;
+  statementTimezone: string;
+  onStatementTimezoneChange: (timeZone: string) => void;
 }) {
   if (loading && !detail) return <section className="panel import-detail-empty"><LoaderCircle className="spin" size={28} /><strong>Loading import…</strong></section>;
   if (!detail) return <section className="panel import-detail-empty"><UploadCloud size={31} /><strong>Select an import</strong><span>Choose a batch to inspect its status and review candidates.</span></section>;
@@ -602,7 +611,7 @@ function BatchDetail({
   return <section className="panel import-detail">
     <div className="import-detail-head">
       <div className={`import-file-icon large ${fileKind(batch.originalFilename, batch.mimeType)}`}><ImportFileIcon filename={batch.originalFilename} mimeType={batch.mimeType} size={22} /></div>
-      <div className="import-detail-title"><h2>{batch.originalFilename}</h2><p>{batch.accountName || "Financial account"} · {formatBytes(document?.byteSize || batch.byteSize)}{document?.pageCount ? ` · ${document.pageCount} pages` : ""} · uploaded {formatDate(batch.createdAt, true)}</p></div>
+      <div className="import-detail-title"><h2>{batch.originalFilename}</h2><p>{batch.accountName || "Financial account"} · {formatBytes(document?.byteSize || batch.byteSize)}{document?.pageCount ? ` · ${document.pageCount} pages` : ""} · uploaded {formatDate(batch.createdAt, true)} · statement timezone {completed ? batch.statementTimezone : statementTimezone}</p></div>
       {document && onOpenOriginal && <button className="button secondary small import-original-link" onClick={() => onOpenOriginal(null)}><ExternalLink size={14} /> Open original</button>}
       <StatusPill status={status} />
     </div>
@@ -626,7 +635,7 @@ function BatchDetail({
 
       {total > 0 ? <div className="import-candidates">
         <div className="import-candidates-heading"><div><h3>{completed ? "Imported transactions" : "Review candidates"}</h3><p>{completed ? "These candidates were committed to your ledger with their source provenance." : "Check every value against its source, then approve or reject it."}</p></div>{document?.sha256 && <span title={document.sha256}>SHA-256 · {document.sha256.slice(0, 10)}…</span>}</div>
-        {items.map((item) => <CandidateEditor key={item.id} item={item} onOpenOriginal={document ? onOpenOriginal : null} costCenters={costCenters} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}
+        <div className="import-candidate-scroll">{items.map((item) => <CandidateEditor key={item.id} item={item} onOpenOriginal={document ? onOpenOriginal : null} costCenters={costCenters} disabled={completed || loading || busyItemIds.has(item.id)} onAction={(reviewStatus, candidate) => onItemAction(item.id, reviewStatus, candidate)} />)}</div>
         {pagination.totalPages > 1 && <nav className="import-pagination" aria-label="Candidate pages">
           <span>Showing {(pagination.page - 1) * pagination.pageSize + 1}–{Math.min(pagination.page * pagination.pageSize, pagination.total)} of {pagination.total}</span>
           <div><button className="button secondary small" disabled={loading || pagination.page <= 1} onClick={() => onPageChange(pagination.page - 1)}><ChevronLeft size={15} /> Previous</button><strong>Page {pagination.page} of {pagination.totalPages}</strong><button className="button secondary small" disabled={loading || pagination.page >= pagination.totalPages} onClick={() => onPageChange(pagination.page + 1)}>Next <ChevronRight size={15} /></button></div>
@@ -635,6 +644,7 @@ function BatchDetail({
 
       {!completed && total > 0 && <div className="import-approval-bar">
         <div>{unresolved > 0 ? <><Clock3 size={18} /><span><strong>{unresolved} candidate{unresolved === 1 ? "" : "s"} still need a decision</strong><small>Approve or reject every row before finishing the batch.</small></span></> : <><CheckCircle2 size={18} /><span><strong>Review complete</strong><small>{approved ? `${approved} approved candidate${approved === 1 ? "" : "s"} will be inserted; ` : "No transactions will be inserted; "}{rejected} will be kept only in the audit trail.</small></span></>}</div>
+        <label className="import-timezone-select"><span>Statement timezone<small>Dates are saved as 12:00 in this timezone, stored in UTC.</small></span><TimeZoneSelect value={statementTimezone} onChange={onStatementTimezoneChange} disabled={approving} /></label>
         <button className="button primary" disabled={!canInsert || approving} onClick={() => void onApproveBatch()}>{approving ? <LoaderCircle className="spin" size={17} /> : <CheckCircle2 size={17} />} {approved ? `Insert ${approved} transaction${approved === 1 ? "" : "s"}` : "Finish review"}</button>
       </div>}
 
@@ -646,7 +656,7 @@ function BatchDetail({
 }
 
 export function ImportsWorkspace() {
-  const { accounts, costCenters, loading: accountsLoading, error: financeError, reload: reloadFinance } = useFinanceData();
+  const { accounts, costCenters, preferences, loading: accountsLoading, error: financeError, reload: reloadFinance } = useFinanceData();
   const { workspaceId, workspaceFetch } = useWorkspace();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [accountId, setAccountId] = useState("");
@@ -666,9 +676,27 @@ export function ImportsWorkspace() {
   const [actionError, setActionError] = useState("");
   const [busyItemIds, setBusyItemIds] = useState<Set<string>>(() => new Set());
   const [approving, setApproving] = useState(false);
+  const [uploadTimezoneChoice, setUploadTimezoneChoice] = useState("");
+  const [approvalTimezones, setApprovalTimezones] = useState<Record<string, string>>({});
+  const uploadTimezone = uploadTimezoneChoice || preferences.timezone;
+  const selectedBatch = detail?.batch.id === selectedId ? detail.batch : null;
+  const approvalTimezone = (selectedId && approvalTimezones[selectedId]) || selectedBatch?.statementTimezone || uploadTimezone;
   const selectedAccountId = accountId && accounts.some((account) => account.id === accountId) ? accountId : accounts[0]?.id || "";
   const activeAccount = useMemo(() => accounts.find((account) => account.id === selectedAccountId), [accounts, selectedAccountId]);
   const importCostCenters = useMemo(() => flattenCostCenters(costCenters), [costCenters]);
+
+  useEffect(() => {
+    let stored = "";
+    try { stored = localStorage.getItem(STATEMENT_TIMEZONE_KEY) ?? ""; } catch { stored = ""; }
+    if (!isValidTimeZone(stored)) return;
+    const frame = window.requestAnimationFrame(() => setUploadTimezoneChoice(stored));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const chooseUploadTimezone = (timeZone: string) => {
+    setUploadTimezoneChoice(timeZone);
+    try { localStorage.setItem(STATEMENT_TIMEZONE_KEY, timeZone); } catch { /* remembering the choice is optional */ }
+  };
 
   const loadBatches = useCallback(async () => {
     setListLoading(true);
@@ -779,6 +807,7 @@ export function ImportsWorkspace() {
     request.setRequestHeader("Content-Type", pendingFile.type || "application/octet-stream");
     request.setRequestHeader("X-File-Name", encodeURIComponent(pendingFile.name));
     request.setRequestHeader("X-Account-Id", selectedAccountId);
+    request.setRequestHeader("X-Statement-Timezone", uploadTimezone);
     request.setRequestHeader("X-Orbit-Workspace-Id", workspaceId);
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) setUploadProgress(Math.round((event.loaded / event.total) * 100));
@@ -872,7 +901,7 @@ export function ImportsWorkspace() {
       const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviewRevision }),
+        body: JSON.stringify({ reviewRevision, statementTimezone: approvalTimezone }),
       });
       const body = await responseBody(response);
       if (!response.ok) throw new Error(errorFromBody(body, "Could not insert this import."));
@@ -933,6 +962,7 @@ export function ImportsWorkspace() {
       <div className="import-uploader-copy"><span><UploadCloud size={22} /></span><div><h2>Import a statement</h2><p>PDFs are inspected locally. Scanned pages and images are converted into reviewable transaction candidates.</p></div></div>
       <div className="import-upload-controls">
         <label className="import-account-select"><span>Destination account</span><select value={selectedAccountId} onChange={(event) => setAccountId(event.target.value)} disabled={accountsLoading || uploading || !accounts.length}><option value="" disabled>{accountsLoading ? "Loading accounts…" : "Select an account"}</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.currency}</option>)}</select></label>
+        <label className="import-account-select"><span>Statement timezone</span><TimeZoneSelect value={uploadTimezone} onChange={chooseUploadTimezone} disabled={uploading} /><small className="import-field-hint">The timezone the statement&apos;s dates are written in. Transactions are stored in UTC.</small></label>
         <div className={`import-dropzone ${dragging ? "dragging" : ""} ${pendingFile ? "has-file" : ""} ${!accounts.length ? "disabled" : ""}`} role="button" tabIndex={accounts.length && !uploading ? 0 : -1} onKeyDown={dropKey} onClick={() => { if (accounts.length && !uploading) fileInputRef.current?.click(); }} onDragEnter={(event) => { event.preventDefault(); if (!uploading) setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={drop}>
           <input ref={fileInputRef} type="file" accept=".pdf,.csv,.jpg,.jpeg,.png,.webp,application/pdf,text/csv,image/jpeg,image/png,image/webp" onChange={(event) => chooseFile(event.target.files?.[0])} disabled={!accounts.length || uploading} />
           {pendingFile ? <><span className={`import-file-icon ${fileKind(pendingFile.name, pendingFile.type)}`}><ImportFileIcon filename={pendingFile.name} mimeType={pendingFile.type} size={21} /></span><div><strong>{pendingFile.name}</strong><small>{formatBytes(pendingFile.size)} · ready for {activeAccount?.name || "the selected account"}</small></div><button onClick={(event) => { event.stopPropagation(); setPendingFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }} aria-label="Remove selected file"><X size={16} /></button></> : <><UploadCloud size={23} /><div><strong>Drop a statement here, or choose a file</strong><small>PDF up to {formatBytes(limits.pdfBytes)} / {limits.pdfPages} pages · CSV up to {formatBytes(limits.csvBytes)} · image up to {formatBytes(limits.imageBytes)}</small></div></>}
@@ -947,7 +977,7 @@ export function ImportsWorkspace() {
 
     <div className="imports-layout">
       <BatchList batches={batches} selectedId={selectedId} loading={listLoading} onSelect={selectBatch} onRefresh={() => { void loadBatches(); if (selectedId) void refreshDetail(selectedId); }} />
-      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} onOpenOriginal={(page) => { void openOriginal(page).catch((caught) => setActionError(caught instanceof Error ? caught.message : "Could not open the original document.")); }} />
+      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} statementTimezone={approvalTimezone} onStatementTimezoneChange={(timeZone) => { if (selectedId) setApprovalTimezones((current) => ({ ...current, [selectedId]: timeZone })); }} onOpenOriginal={(page) => { void openOriginal(page).catch((caught) => setActionError(caught instanceof Error ? caught.message : "Could not open the original document.")); }} />
     </div>
   </div>;
 }

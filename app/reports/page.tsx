@@ -6,6 +6,7 @@ import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation, type Cur
 import { currenciesFor, groupCurrencyAmounts, transactionFlows, type CurrencyAmount, type FxRateMap } from "@/lib/currency-summary";
 import { formatMoney, type Account, type CostCenter, type Transaction } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
+import { formatMonth, monthKeyInZone, todayInZone } from "@/lib/time";
 
 type ReportMetrics = {
   currency: string;
@@ -18,18 +19,18 @@ type ReportMetrics = {
 
 type SpendCenter = CostCenter & { total: number };
 
-function months() {
-  const now = new Date();
+function months(timeZone: string, locale: string) {
+  const [year, month] = todayInZone(timeZone).split("-").map(Number);
   return Array.from({ length: 6 }, (_, index) => {
-    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5 + index, 1));
-    return { key: date.toISOString().slice(0, 7), label: date.toLocaleString("en", { month: "short", timeZone: "UTC" }), income: 0, expense: 0 };
+    const key = new Date(Date.UTC(year, month - 1 - 5 + index, 1)).toISOString().slice(0, 7);
+    return { key, label: formatMonth(key, locale), income: 0, expense: 0 };
   });
 }
 
-function reportMetrics(currency: string, transactions: Transaction[]): ReportMetrics {
-  const buckets = months();
+function reportMetrics(currency: string, transactions: Transaction[], timeZone: string, locale: string): ReportMetrics {
+  const buckets = months(timeZone, locale);
   for (const transaction of transactions) {
-    const bucket = buckets.find((item) => item.key === transaction.occurredOn.slice(0, 7));
+    const bucket = buckets.find((item) => item.key === monthKeyInZone(transaction.occurredAt, timeZone));
     if (!bucket) continue;
     if (transaction.type === "Income") bucket.income += transaction.amount;
     if (transaction.type === "Expense") bucket.expense += Math.abs(transaction.amount);
@@ -104,10 +105,10 @@ export default function ReportsPage() {
   const converted = currencyPresentation.mode === "converted" && currencyPresentation.rates;
   const displayTransactions = useMemo(() => converted ? convertedTransactions(transactions, preferences.currency, currencyPresentation.rates!) : transactions, [converted, currencyPresentation.rates, preferences.currency, transactions]);
   const views = useMemo(() => {
-    if (converted) return [reportMetrics(preferences.currency, displayTransactions)];
+    if (converted) return [reportMetrics(preferences.currency, displayTransactions, preferences.timezone, preferences.locale)];
     return currenciesFor(transactions.map((transaction) => ({ currency: transaction.currency, amount: transaction.amount })))
-      .map((currency) => reportMetrics(currency, transactions.filter((transaction) => transaction.currency === currency)));
-  }, [converted, displayTransactions, preferences.currency, transactions]);
+      .map((currency) => reportMetrics(currency, transactions.filter((transaction) => transaction.currency === currency), preferences.timezone, preferences.locale));
+  }, [converted, displayTransactions, preferences.currency, preferences.locale, preferences.timezone, transactions]);
   const flows = useMemo(() => transactionFlows(transactions, preferences.currency), [preferences.currency, transactions]);
   const net = useMemo(() => groupCurrencyAmounts([...flows.inflow, ...flows.outflow.map((value) => ({ ...value, amount: -value.amount }))], preferences.currency), [flows, preferences.currency]);
   const reportCurrency = converted ? preferences.currency : undefined;

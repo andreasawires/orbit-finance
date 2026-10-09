@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, CreditCard, Eye, EyeOff, Landmark, Plus, WalletCards } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, CreditCard, Eye, EyeOff, Landmark, Plus, Trash2, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { AccountForm, Modal, TransactionForm } from "@/components/modal";
 import { TransactionList } from "@/components/transaction-list";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
 import { groupCurrencyAmounts, transactionFlows } from "@/lib/currency-summary";
 import { formatMoney, type Transaction } from "@/lib/data";
+import { formatDate } from "@/lib/time";
 import { useFinanceData } from "@/lib/use-finance-data";
 
 const filters = ["All", "Income", "Expense", "Transfer"];
@@ -21,6 +23,8 @@ export default function Dashboard() {
   const [transactionModal, setTransactionModal] = useState(false);
   const [selected, setSelected] = useState<Transaction | null>(null);
   const [linkMode, setLinkMode] = useState(false);
+  const [deleting, setDeleting] = useState<Transaction | null>(null);
+  const deletingCounterpart = deleting?.transferAccountId ? accounts.find((account) => account.id === deleting.transferAccountId)?.name ?? "another account" : "";
   const visible = filter === "All" ? transactions.slice(0, 6) : transactions.filter((t) => t.type === filter).slice(0, 6);
   const totals = useMemo(() => {
     const balance = groupCurrencyAmounts(accounts.map((account) => ({ currency: account.currency, amount: account.balance })), preferences.currency);
@@ -64,10 +68,15 @@ export default function Dashboard() {
 
     <section className="panel transactions-panel">
       <div className="panel-head transaction-panel-head"><div><h2>Latest transactions</h2><p>Your most recent saved activity</p></div><div className="inline-filters">{filters.map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><Link href="/transactions" className="view-all">View all <ArrowRight size={15} /></Link></div>
-      {visible.length ? <TransactionList items={visible} compact locale={preferences.locale} onSelect={setSelected} /> : <div className="empty-state">{loading ? "Loading transactions…" : "No transactions to show."}</div>}
+      {visible.length ? <TransactionList items={visible} compact locale={preferences.locale} timeZone={preferences.timezone} onSelect={setSelected} /> : <div className="empty-state">{loading ? "Loading transactions…" : "No transactions to show."}</div>}
     </section>
 
     <Modal open={accountModal} onClose={() => setAccountModal(false)} title="Add a new account" subtitle="Accounts are stored in PostgreSQL." action="Add account" onSubmit={(form) => mutate("POST", { resource: "account", data: values(form) })}><AccountForm currencies={currencies} /></Modal>
-    <Modal open={transactionModal || !!selected} onClose={() => { setTransactionModal(false); setSelected(null); setLinkMode(false); }} title={selected ? "Edit transaction" : "New transaction"} subtitle={selected ? `Update ${selected.merchant}.` : "Record a real transaction."} action={linkMode ? "Link as transfer" : selected ? "Save changes" : "Add transaction"} onSubmit={(form) => { const data = values(form); return mutate(selected ? "PATCH" : "POST", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transactions={transactions} transaction={selected} locale={preferences.locale} onTransferLinkModeChange={setLinkMode} /></Modal>
+    <Modal open={transactionModal || !!selected} onClose={() => { setTransactionModal(false); setSelected(null); setLinkMode(false); }} footerStart={selected ? <button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); setLinkMode(false); }}><Trash2 size={15} /> Delete</button> : null} title={selected ? "Edit transaction" : "New transaction"} subtitle={selected ? `Update ${selected.merchant}.` : "Record a real transaction."} action={linkMode ? "Link as transfer" : selected ? "Save changes" : "Add transaction"} onSubmit={(form) => { const data = values(form); return mutate(selected ? "PATCH" : "POST", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transactions={transactions} transaction={selected} locale={preferences.locale} timeZone={preferences.timezone} onTransferLinkModeChange={setLinkMode} /></Modal>
+    <ConfirmDeleteDialog open={!!deleting} onClose={() => setDeleting(null)} title="Delete transaction?" confirmText={deleting?.merchant ?? ""}
+      impact={deleting?.transferId
+        ? <><strong>This transfer will be permanently deleted.</strong><span>Both sides are removed: {deleting.amount < 0 ? `${deleting.account} → ${deletingCounterpart}` : `${deletingCounterpart} → ${deleting.account}`}.</span></>
+        : <><strong>This transaction will be permanently deleted.</strong><span>{deleting ? `${formatMoney(deleting.amount, deleting.currency, preferences.locale)} · ${formatDate(deleting.occurredAt, preferences.timezone, preferences.locale)} · ${deleting.account}` : ""}</span></>}
+      onConfirm={(confirmName) => mutate("DELETE", { resource: "transaction", id: deleting?.id, data: { confirmName } })} />
   </div>;
 }

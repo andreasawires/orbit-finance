@@ -1,4 +1,8 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
+
+// Return SQL `date` columns as plain "YYYY-MM-DD" strings instead of local-midnight Date objects,
+// which shift by a day once serialized with toISOString() on hosts east of UTC.
+types.setTypeParser(types.builtins.DATE, (value) => value);
 
 const globalForDatabase = globalThis as unknown as { orbitPool?: Pool };
 

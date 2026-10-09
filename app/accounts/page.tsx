@@ -1,7 +1,8 @@
 "use client";
 
-import { CreditCard, Landmark, MoreHorizontal, Plus, Search, WalletCards } from "lucide-react";
+import { CreditCard, Landmark, MoreHorizontal, Plus, Search, Trash2, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { AccountForm, Modal } from "@/components/modal";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
 import { groupCurrencyAmounts } from "@/lib/currency-summary";
@@ -11,10 +12,16 @@ import { useFinanceData } from "@/lib/use-finance-data";
 const values = (form: FormData) => Object.fromEntries(form.entries());
 
 export default function AccountsPage() {
-  const { accounts, currencies, preferences, loading, error, mutate } = useFinanceData();
+  const { accounts, transactions, currencies, preferences, loading, error, mutate } = useFinanceData();
   const [modal, setModal] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Account | null>(null);
+  const [deleting, setDeleting] = useState<Account | null>(null);
+  const deleteImpact = useMemo(() => {
+    if (!deleting) return { own: 0, transfers: 0 };
+    const own = transactions.filter((transaction) => transaction.accountId === deleting.id);
+    return { own: own.length, transfers: own.filter((transaction) => transaction.transferId).length };
+  }, [deleting, transactions]);
   const filtered = accounts.filter((a) => `${a.name} ${a.institution}`.toLowerCase().includes(query.toLowerCase()));
   const summary = useMemo(() => ({
     net: groupCurrencyAmounts(accounts.map((account) => ({ currency: account.currency, amount: account.balance })), preferences.currency),
@@ -43,6 +50,13 @@ export default function AccountsPage() {
       <button className="account-detail-add" onClick={() => setModal(true)}><span><Plus size={23} /></span><strong>Add another account</strong><small>Save an account manually</small></button>
     </div>
     {!loading && !filtered.length && !error && <div className="inline-empty">{query ? "No accounts match your search." : "No accounts yet."}</div>}
-    <Modal open={modal || !!selected} onClose={() => { setModal(false); setSelected(null); }} title={selected ? `Edit ${selected.name}` : "Add a new account"} action={selected ? "Save changes" : "Add account"} onSubmit={(form) => mutate(selected ? "PATCH" : "POST", { resource: "account", id: selected?.id, data: values(form) })}><AccountForm account={selected} currencies={currencies} /></Modal>
+    <Modal open={modal || !!selected} onClose={() => { setModal(false); setSelected(null); }} footerStart={selected ? <button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); }}><Trash2 size={15} /> Delete account</button> : null} title={selected ? `Edit ${selected.name}` : "Add a new account"} action={selected ? "Save changes" : "Add account"} onSubmit={(form) => mutate(selected ? "PATCH" : "POST", { resource: "account", id: selected?.id, data: values(form) })}><AccountForm account={selected} currencies={currencies} /></Modal>
+    <ConfirmDeleteDialog open={!!deleting} onClose={() => setDeleting(null)} title={`Delete ${deleting?.name ?? "account"}?`} confirmText={deleting?.name ?? ""}
+      impact={<><strong>The account and everything recorded in it will be permanently deleted.</strong><ul>
+        <li>{deleteImpact.own} transaction{deleteImpact.own === 1 ? "" : "s"}</li>
+        {deleteImpact.transfers > 0 && <li>{deleteImpact.transfers} transfer{deleteImpact.transfers === 1 ? "" : "s"}, including the matching entries on the other accounts</li>}
+        <li>Its import history and uploaded statements</li>
+      </ul></>}
+      onConfirm={(confirmName) => mutate("DELETE", { resource: "account", id: deleting?.id, data: { confirmName } })} />
   </div>;
 }

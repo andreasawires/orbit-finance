@@ -4,9 +4,11 @@ import { Check, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Account, CostCenter, Currency, Transaction } from "@/lib/data";
 import { flattenCostCenters, formatMoney } from "@/lib/data";
+import { formatDate, isIsoDate, todayInZone, utcToZonedDate, zonedDateToUtc } from "@/lib/time";
 
-export function Modal({ open, onClose, title, subtitle, children, action = "Save changes", onSubmit }: {
-  open: boolean; onClose: () => void; title: string; subtitle?: string; children: React.ReactNode; action?: string; onSubmit?: (data: FormData) => Promise<unknown> | unknown;
+export function Modal({ open, onClose, title, subtitle, children, action = "Save changes", onSubmit, footerStart, danger = false, submitDisabled = false, savingLabel = "Saving…" }: {
+  open: boolean; onClose: () => void; title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode; onSubmit?: (data: FormData) => Promise<unknown> | unknown;
+  footerStart?: React.ReactNode; danger?: boolean; submitDisabled?: boolean; savingLabel?: string;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -27,10 +29,10 @@ export function Modal({ open, onClose, title, subtitle, children, action = "Save
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <form className="modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-head"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" onClick={onClose}><X size={20} /></button></div>
+        <div className="modal-head"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></div>
         <div className="modal-body">{children}</div>
         {error && <div className="form-error">{error}</div>}
-        <div className="modal-foot"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="submit" className="button primary" disabled={saving}><Check size={17} />{saving ? "Saving…" : action}</button></div>
+        <div className="modal-foot">{footerStart && <div className="modal-foot-start">{footerStart}</div>}<button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="submit" className={`button ${danger ? "danger solid" : "primary"}`} disabled={saving || submitDisabled}>{danger ? null : <Check size={17} />}{saving ? savingLabel : action}</button></div>
       </form>
     </div>
   );
@@ -47,7 +49,7 @@ export function AccountForm({ account, currencies = [] }: { account?: Account | 
   </div>;
 }
 
-export function TransactionForm({ accounts, costCenters, currencies, transactions = [], transaction, locale = "en-US", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transactions?: Transaction[]; transaction?: Transaction | null; locale?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
+export function TransactionForm({ accounts, costCenters, currencies, transactions = [], transaction, locale = "en-US", timeZone = "UTC", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transactions?: Transaction[]; transaction?: Transaction | null; locale?: string; timeZone?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
   const [type, setType] = useState<Transaction["type"]>(transaction?.type ?? "Expense");
   const initialSourceAccountId = transaction?.type === "Transfer" && transaction.amount > 0 ? transaction.transferAccountId ?? "" : transaction?.accountId ?? accounts[0]?.id ?? "";
   const initialDestinationAccountId = transaction?.type === "Transfer" && transaction.amount < 0 ? transaction.transferAccountId ?? "" : transaction?.type === "Transfer" ? transaction?.accountId ?? "" : accounts.find((account) => account.id !== initialSourceAccountId)?.id ?? "";
@@ -63,6 +65,11 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
   const transactionCurrency = transaction?.currency ?? accounts.find((item) => item.id === transaction?.accountId)?.currency ?? "USD";
   const linkedAccounts = accounts.filter((item) => item.id !== transaction?.accountId && item.currency === transactionCurrency);
   const [otherAccountId, setOtherAccountId] = useState("");
+  // The date input is in the workspace timezone; the API receives a UTC instant. An unchanged date keeps
+  // its original instant so imported transactions stay anchored to their statement's timezone.
+  const originalDate = transaction ? utcToZonedDate(transaction.occurredAt, timeZone) : "";
+  const [occurredOn, setOccurredOn] = useState(() => originalDate || todayInZone(timeZone));
+  const occurredAt = transaction && occurredOn === originalDate ? transaction.occurredAt : isIsoDate(occurredOn) ? zonedDateToUtc(occurredOn, timeZone) : "";
   const candidates = isReconciliation ? transactions.filter((item) =>
     item.id !== transaction?.id && item.accountId === otherAccountId && !item.transferId &&
     ((transaction.amount < 0 && item.type === "Income" && item.amount > 0) || (transaction.amount > 0 && item.type === "Expense" && item.amount < 0)) &&
@@ -73,13 +80,13 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
     <div className="full segmented-input">{(["Expense", "Income", "Transfer"] as const).map((value) => <button type="button" className={type === value ? "active" : ""} key={value} onClick={() => { setType(value); onTransferLinkModeChange?.(value === "Transfer" && canReconcile); }}>{value}</button>)}</div>
     {isReconciliation ? <>
       <input type="hidden" name="linkExistingTransfer" value="true" />
-      <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency, locale)} · {transaction.date}</span></div>
+      <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency, locale)} · {formatDate(transaction.occurredAt, timeZone, locale)}</span></div>
       <label className="full">Other account<select value={otherAccountId} onChange={(event) => setOtherAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{linkedAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-      {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{item.date} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
+      {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{formatDate(item.occurredAt, timeZone, locale)} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
     </> : <>
       <label className="full">Description<input name="description" defaultValue={transaction?.merchant} placeholder="What was this for?" required /></label>
       <label><span className="amount-label">Amount<small>{currencyLabel}</small></span><input name="amount" defaultValue={transaction ? Math.abs(transaction.amount) : undefined} type="number" min="0" step="0.01" placeholder="0.00" required /></label>
-      <label>Date<input name="occurredOn" type="date" defaultValue={transaction?.occurredOn ?? new Date().toISOString().slice(0, 10)} required /></label>
+      <label>Date<input type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} required /><input type="hidden" name="occurredAt" value={occurredAt} /></label>
       <label>{isTransfer ? "From account" : "Account"}<select name="accountId" value={accountId} onChange={(event) => setAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
       {isTransfer ? <label>To account<select name="transferAccountId" value={transferAccountId} onChange={(event) => setTransferAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{accounts.filter((account) => account.id !== accountId).map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label> : <label>Cost center<select name="costCenterId" defaultValue={transaction?.costCenterId ?? ""}><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select></label>}
       <label className="full">Note<textarea name="note" defaultValue={transaction?.detail} placeholder="Add an optional note..." rows={3} /></label>

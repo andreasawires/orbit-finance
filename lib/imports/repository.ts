@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { db } from "@/lib/database";
+import { isValidTimeZone } from "@/lib/time";
 import {
   type ApproveImportBatchInput,
   type ApproveImportBatchResult,
@@ -66,9 +67,10 @@ function timestamp(value: unknown): string | null {
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
+// SQL `date` columns are parsed as plain YYYY-MM-DD strings (see lib/database.ts), so no timezone shift applies.
 function date(value: unknown): string | null {
   if (value == null) return null;
-  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+  return String(value).slice(0, 10);
 }
 
 function decimal(value: unknown): string | null {
@@ -117,6 +119,7 @@ function batchFromRow(row: Row): ImportBatch {
     sourceKind: row.source_kind as ImportBatch["sourceKind"],
     status: row.status as ImportBatchStatus,
     idempotencyKey: row.idempotency_key == null ? null : String(row.idempotency_key),
+    statementTimezone: String(row.statement_timezone ?? "UTC"),
     pipelineVersion: String(row.pipeline_version),
     parserName: row.parser_name == null ? null : String(row.parser_name),
     parserVersion: row.parser_version == null ? null : String(row.parser_version),
@@ -269,14 +272,17 @@ export async function updateImportDocumentInspection(
 
 export async function createImportBatch(input: CreateImportBatchInput): Promise<ImportBatch> {
   assertNonEmpty(input.pipelineVersion, "pipelineVersion");
+  if (!isValidTimeZone(input.statementTimezone)) throw new Error("Choose a valid statement timezone.");
   if (input.idempotencyKey != null) assertNonEmpty(input.idempotencyKey, "idempotencyKey");
   return inTransaction(async (client) => {
     const result = await client.query(`INSERT INTO import_batches (
         workspace_id, document_id, account_id, source_kind, idempotency_key, pipeline_version,
         parser_name, parser_version, extractor_name, extractor_version,
-        model_name, model_version, model_quantization, prompt_version, settings
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
-      ON CONFLICT (workspace_id, idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+        model_name, model_version, model_quantization, prompt_version, settings, statement_timezone
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16)
+      ON CONFLICT (workspace_id, idempotency_key) DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key,
+        statement_timezone = CASE WHEN import_batches.status IN ('approving', 'completed', 'cancelled')
+          THEN import_batches.statement_timezone ELSE EXCLUDED.statement_timezone END
       RETURNING *`, [
       input.workspaceId,
       input.documentId,
@@ -293,6 +299,7 @@ export async function createImportBatch(input: CreateImportBatchInput): Promise<
       input.modelQuantization ?? null,
       input.promptVersion ?? null,
       JSON.stringify(input.settings ?? {}),
+      input.statementTimezone,
     ]);
     const batch = batchFromRow(result.rows[0]);
     if (batch.documentId !== input.documentId || batch.accountId !== input.accountId || batch.sourceKind !== input.sourceKind) {
@@ -880,6 +887,15 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
       throw new Error("The review changed before approval. Refresh the batch and try again.");
     }
 
+    // The statement's calendar dates are converted to UTC instants in this timezone when inserted below.
+    const statementTimezone = input.statementTimezone ?? batch.statementTimezone;
+    if (!isValidTimeZone(statementTimezone)) throw new Error("Choose a valid statement timezone.");
+    const knownZone = await client.query("SELECT 1 FROM pg_timezone_names WHERE name = $1", [statementTimezone]);
+    if (!knownZone.rowCount) throw new Error(`The database does not recognize the timezone ${statementTimezone}.`);
+    if (statementTimezone !== batch.statementTimezone) {
+      await client.query("UPDATE import_batches SET statement_timezone = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2", [input.workspaceId, batch.id, statementTimezone]);
+    }
+
     // Serialize approvals for the same account so strong external identifiers
     // can be checked without a race between two batches.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [batch.accountId]);
@@ -1021,7 +1037,7 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
             gen_random_uuid() AS transaction_id,
             b.workspace_id,
             b.account_id,
-            i.occurred_on,
+            (i.occurred_on + time '12:00') AT TIME ZONE b.statement_timezone AS occurred_at,
             i.description,
             i.note,
             i.cost_center_id,
@@ -1036,10 +1052,10 @@ export async function approveImportBatch(input: ApproveImportBatchInput): Promis
           WHERE i.workspace_id = $1 AND i.batch_id = $2 AND i.id = ANY($3::uuid[]) AND existing.id IS NULL
         ), inserted_transactions AS (
           INSERT INTO transactions (
-            id, workspace_id, occurred_on, description, note, account_id, cost_center_id, amount, type
+            id, workspace_id, occurred_at, description, note, account_id, cost_center_id, amount, type
           )
           SELECT
-            transaction_id, workspace_id, occurred_on, description, note, account_id, cost_center_id, amount, transaction_type
+            transaction_id, workspace_id, occurred_at, description, note, account_id, cost_center_id, amount, transaction_type
           FROM candidates
           RETURNING id
         )

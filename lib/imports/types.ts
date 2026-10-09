@@ -76,6 +76,8 @@ export type ImportBatch = ImportPipelineProvenance & {
   sourceKind: ImportSourceKind;
   status: ImportBatchStatus;
   idempotencyKey: string | null;
+  /** IANA timezone the statement's calendar dates are in; dates become UTC instants on approval. */
+  statementTimezone: string;
   errorCode: string | null;
   errorMessage: string | null;
   reviewRevision: string;
@@ -164,6 +166,7 @@ export type CreateImportBatchInput = ImportPipelineProvenance & {
   accountId: string;
   sourceKind: ImportSourceKind;
   idempotencyKey?: string | null;
+  statementTimezone: string;
 };
 
 export type ImportItemCandidate = {
@@ -197,6 +200,8 @@ export type ApproveImportBatchInput = {
   /** Batch revision shown on the review screen; prevents stale-tab approval. */
   reviewRevision: string;
   approvedBy?: string | null;
+  /** Overrides the batch's statement timezone before its dates are converted to UTC. */
+  statementTimezone?: string;
 };
 
 export type ApproveImportBatchResult = {

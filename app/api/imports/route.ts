@@ -17,6 +17,7 @@ import {
 } from "@/lib/imports/repository";
 import { deleteStoredFile, storeUpload, type StoredUpload } from "@/lib/imports/storage";
 import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
+import { isValidTimeZone, safeTimeZone } from "@/lib/time";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,6 +89,12 @@ export async function POST(request: NextRequest) {
     );
     if (!account.rowCount) throw new Error("The destination account does not exist.");
     const canonicalAccountId = String(account.rows[0].id);
+    const requestedTimezone = request.headers.get("x-statement-timezone")?.trim() ?? "";
+    if (requestedTimezone && !isValidTimeZone(requestedTimezone)) throw new Error("Choose a valid statement timezone.");
+    const statementTimezone = requestedTimezone || safeTimeZone((await db.query<{ timezone: string }>(
+      "SELECT timezone FROM workspace_preferences WHERE workspace_id = $1",
+      [workspace.id],
+    )).rows[0]?.timezone);
 
     if (!request.body) throw new Error("The uploaded file is empty.");
     const contentLength = Number(request.headers.get("content-length"));
@@ -120,6 +127,7 @@ export async function POST(request: NextRequest) {
       accountId: canonicalAccountId,
       sourceKind: stored.detected.kind,
       idempotencyKey,
+      statementTimezone,
       pipelineVersion: "1",
       parserName: stored.detected.kind === "pdf"
         ? "@firecrawl/pdf-inspector"

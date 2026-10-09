@@ -535,3 +535,34 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
   .currency-mode { max-width: 100%; }
   .currency-mode button { font-size: 10px; }
 }
+
+/* Destructive confirmations */
+.modal-foot-start { margin-right: auto; display: flex; }
+.button.danger:hover { background: color-mix(in srgb, var(--red), transparent 84%); }
+.button.danger.solid { background: var(--red); color: white; box-shadow: 0 7px 15px color-mix(in srgb, var(--red), transparent 75%); }
+.button.danger.solid:hover { background: color-mix(in srgb, var(--red), black 12%); }
+.modal-foot .button:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; }
+.confirm-delete { display: flex; flex-direction: column; gap: 18px; }
+.confirm-delete-warning { display: flex; gap: 11px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--red), transparent 70%); border-radius: 10px; background: color-mix(in srgb, var(--red), transparent 93%); color: var(--red); font-size: 12px; line-height: 1.5; }
+.confirm-delete-warning > svg { flex: 0 0 auto; margin-top: 1px; }
+.confirm-delete-warning > div { display: flex; flex-direction: column; gap: 4px; color: var(--ink); }
+.confirm-delete-warning strong { color: var(--red); }
+.confirm-delete-warning span { color: var(--muted); }
+.confirm-delete-warning ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
+.confirm-delete label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.confirm-delete-name { color: var(--ink); font-weight: 700; user-select: all; overflow-wrap: anywhere; }
+.confirm-delete input { width: 100%; min-height: 42px; border: 1px solid #dedce6; border-radius: 9px; padding: 9px 11px; background: var(--paper); color: var(--ink); outline: none; }
+.confirm-delete input:focus { border-color: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red), transparent 88%); }
+:root[data-theme="dark"] .confirm-delete input { border-color: var(--line); }
+
+/* Statement timezone + scrollable review list */
+.import-field-hint { color: var(--muted); font-size: 10px; font-weight: 400; }
+.import-timezone-select { display: flex; flex-direction: column; gap: 6px; min-width: 230px; max-width: 280px; font-size: 11px; font-weight: 650; color: var(--ink); }
+.import-timezone-select > span { display: flex; flex-direction: column; }
+.import-timezone-select select { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 9px; padding: 0 9px; background: var(--paper); color: var(--ink); }
+.import-candidate-scroll { max-height: min(65vh, 720px); overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px 4px; scrollbar-gutter: stable; }
+.import-candidate-scroll > .import-candidate:first-child { margin-top: 4px; }
+@media (max-width: 900px) {
+  .import-candidate-scroll { max-height: 70vh; }
+  .import-timezone-select { max-width: none; }
+}

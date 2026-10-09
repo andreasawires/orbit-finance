@@ -221,6 +221,14 @@ test("deterministic validation rejects zero, sign mismatches, and currency misma
   assert.match(validateCandidate(candidate(), "USD").join(" "), /differs/i);
 });
 
+test("future-date check uses the statement timezone's calendar", () => {
+  // 2025-03-14 23:30 UTC is already 2025-03-15 in Tokyo, so 2025-03-16 is only "tomorrow" there.
+  const now = new Date("2025-03-14T23:30:00Z");
+  assert.deepEqual(validateCandidate(candidate({ occurredOn: "2025-03-16" }), "EUR", "Asia/Tokyo", now), []);
+  assert.match(validateCandidate(candidate({ occurredOn: "2025-03-16" }), "EUR", "UTC", now).join(" "), /future/i);
+  assert.match(validateCandidate(candidate({ occurredOn: "2025-02-30" }), "EUR", "UTC", now).join(" "), /invalid/i);
+});
+
 test("duplicate fingerprints canonicalize decimal scale and Unicode descriptions", () => {
   const first = candidateFingerprint("account", candidate({ amount: "-42.5", description: "Cafe\u0301  Central" }));
   const second = candidateFingerprint("account", candidate({ amount: "-42.50", description: "CAFÉ—CENTRAL" }));

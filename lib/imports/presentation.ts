@@ -42,6 +42,7 @@ function batchView(
     accountId: batch.accountId,
     accountName: account.name,
     status: batch.status,
+    statementTimezone: batch.statementTimezone,
     originalFilename: document.originalFilename,
     mimeType: document.mediaType,
     byteSize: Number(document.sizeBytes),

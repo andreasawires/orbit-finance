@@ -55,7 +55,7 @@ export async function PATCH(request: NextRequest, context: Context) {
           error: candidate.error.issues.map((issue) => issue.message).join(" "),
         }, { status: 422 });
       }
-      const errors = validateCandidate(candidate.data, work.account.currency);
+      const errors = validateCandidate(candidate.data, work.account.currency, work.batch.statementTimezone);
       if (errors.length) {
         return NextResponse.json({ error: errors.join(" ") }, { status: 422 });
       }

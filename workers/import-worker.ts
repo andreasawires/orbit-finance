@@ -44,8 +44,9 @@ function itemCandidate(
   item: Awaited<ReturnType<typeof extractImport>>["candidates"][number],
   accountId: string,
   accountCurrency: string,
+  statementTimezone: string,
 ): ImportItemCandidate {
-  const errors = validateCandidate(item.candidate, accountCurrency);
+  const errors = validateCandidate(item.candidate, accountCurrency, statementTimezone);
   const parsed = transactionCandidateSchema.safeParse(item.candidate);
   const validationStatus: ImportValidationStatus = errors.length
     ? "invalid"
@@ -145,6 +146,7 @@ async function processImport(job: Job<ImportJobData>) {
       item,
       work.account.id,
       work.account.currency,
+      work.batch.statementTimezone,
     ));
     const importedFingerprints = await findImportedFingerprints(
       job.data.workspaceId,
