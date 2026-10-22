@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { presentImportDetail } from "@/lib/imports/presentation";
-import { getImportBatchDetail, listImportTransactionMappings } from "@/lib/imports/repository";
+import { deleteImportBatch, getImportBatchDetail, listImportTransactionMappings } from "@/lib/imports/repository";
 import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
 
 export const runtime = "nodejs";
@@ -29,5 +29,21 @@ export async function GET(request: Request, context: Context) {
     const workspace = workspaceRequestFailure(error);
     const message = error instanceof Error ? error.message : "Could not load import batch.";
     return NextResponse.json({ error: workspace.status === 503 ? message : workspace.message }, { status: workspace.status });
+  }
+}
+
+export async function DELETE(request: Request, context: Context) {
+  try {
+    const workspace = await requireRequestWorkspace(request);
+    const { id } = await context.params;
+    if (!uuid.test(id)) return NextResponse.json({ error: "Invalid import batch id." }, { status: 400 });
+    await deleteImportBatch(workspace.id, id);
+    return NextResponse.json({ deleted: true });
+  } catch (error) {
+    console.error("Could not delete import batch", error);
+    const message = error instanceof Error ? error.message : "Could not delete import batch.";
+    const workspace = workspaceRequestFailure(error);
+    const status = workspace.status !== 503 ? workspace.status : /not found/i.test(message) ? 404 : /cannot/i.test(message) ? 409 : 503;
+    return NextResponse.json({ error: workspace.status === 503 ? message : workspace.message }, { status });
   }
 }

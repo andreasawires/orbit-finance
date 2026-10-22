@@ -13,6 +13,8 @@ type ExtractRequest = {
   storageKey: string;
   kind: ImportFileKind;
   accountCurrency: string;
+  /** Aborts in-flight rendering and model requests when the import is cancelled. */
+  signal?: AbortSignal;
 };
 
 type ExtractStage = "converting";
@@ -294,7 +296,7 @@ async function extractCsv(request: ExtractRequest, onStage?: (stage: ExtractStag
   let confidence = 0.98;
   if (!mapping) {
     await onStage?.("converting");
-    mapping = await inferCsvMapping(headers, rows);
+    mapping = await inferCsvMapping(headers, rows, request.signal);
     confidence = 0.86;
   } else {
     dateOrderConclusive = hasConclusiveDateOrder(rows, mapping.dateColumn);
@@ -376,6 +378,7 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
   };
 
   for (let pageIndex = 0; pageIndex < extracted.pages.length;) {
+    request.signal?.throwIfAborted();
     const page = extracted.pages[pageIndex]!;
     const pageNumber = page.page + 1;
     if (page.needsOcr) {
@@ -386,7 +389,8 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
         content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
         statementContext: pageNumber > 1 ? statementContext : undefined,
         imagePath,
-      }));
+        signal: request.signal,
+      }), request.signal);
       if (pageNumber === 1 && !statementContext) statementContext = contextFromFirstPageCandidates(result.transactions);
       addResult(result, [pageNumber]);
       pageIndex += 1;
@@ -407,6 +411,7 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
       // combined source when the configured limit is exceeded.
       content: nativePages.map((nativePage) => `[PDF page ${nativePage.page + 1}]\n${nativePage.markdown}`).join("\n\n"),
       requireSourcePage: true,
+      signal: request.signal,
     });
     addResult(result, pageNumbers);
   }
@@ -425,6 +430,7 @@ async function extractImage(request: ExtractRequest, onStage?: (stage: ExtractSt
       sourceLabel: "uploaded statement or receipt image",
       content: "Read all visible financial transaction rows from this image.",
       imagePath: normalizedPath,
+      signal: request.signal,
     });
     const candidates = result.transactions.map(({ sourceEvidence, ...candidate }) => ({
       sourceKind: "image" as const,

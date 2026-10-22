@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { db } from "@/lib/database";
+import { IMPORT_STORAGE_ADVISORY_LOCK } from "@/lib/imports/locks";
+import { deleteStoredFile } from "@/lib/imports/storage";
 import { isValidTimeZone } from "@/lib/time";
 import {
   type ApproveImportBatchInput,
@@ -527,6 +529,42 @@ export async function transitionImportBatch(workspaceId: string, batchId: string
     ]);
     return batchFromRow(updated.rows[0]);
   });
+}
+
+export const CANCELLABLE_IMPORT_BATCH_STATUSES: readonly ImportBatchStatus[] = [
+  "uploaded", "queued", "extracting", "converting", "validating", "failed",
+];
+export const DELETABLE_IMPORT_BATCH_STATUSES: readonly ImportBatchStatus[] = ["awaiting_review", "failed", "cancelled"];
+
+/** Removes a batch with its items and events, plus its stored document when no other batch uses it. */
+export async function deleteImportBatch(workspaceId: string, batchId: string) {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [IMPORT_STORAGE_ADVISORY_LOCK]);
+    // The worker holds this key while it processes the batch, including while it winds down after a cancel.
+    const worker = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked", [batchId]);
+    if (worker.rows[0]?.locked !== true) throw new Error("Import batch cannot be deleted while it is still stopping. Try again in a moment.");
+    const batch = await client.query<{ status: ImportBatchStatus; document_id: string }>(
+      "SELECT status, document_id FROM import_batches WHERE workspace_id=$1 AND id=$2 FOR UPDATE",
+      [workspaceId, batchId],
+    );
+    if (!batch.rowCount) throw new Error("Import batch not found.");
+    const { status, document_id: documentId } = batch.rows[0];
+    if (!DELETABLE_IMPORT_BATCH_STATUSES.includes(status)) throw new Error(`Import batch cannot be deleted while it is ${status}.`);
+    await client.query("DELETE FROM import_batches WHERE workspace_id=$1 AND id=$2", [workspaceId, batchId]);
+    const document = await client.query<{ storage_key: string }>(`DELETE FROM import_documents d
+      WHERE d.workspace_id=$1 AND d.id=$2
+        AND NOT EXISTS (SELECT 1 FROM import_batches b WHERE b.workspace_id=$1 AND b.document_id=d.id)
+      RETURNING d.storage_key`, [workspaceId, documentId]);
+    if (document.rowCount) await deleteStoredFile(String(document.rows[0].storage_key));
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function updateImportBatchStatus(

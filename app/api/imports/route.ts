@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
     batchWasRegistered = true;
 
     if (batch.status === "cancelled") {
-      return NextResponse.json({ error: "This exact document import was cancelled and cannot be queued again." }, { status: 409 });
+      return NextResponse.json({ error: "This exact document import was cancelled. Delete it from the import history to upload it again." }, { status: 409 });
     }
     if (["uploaded", "failed", "queued"].includes(batch.status)) {
       try {

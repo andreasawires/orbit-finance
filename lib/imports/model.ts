@@ -11,6 +11,7 @@ type ConvertRequest = {
   statementContext?: string;
   imagePath?: string;
   requireSourcePage?: boolean;
+  signal?: AbortSignal;
 };
 
 const systemPrompt = `You convert financial statement source material into transaction candidates.
@@ -195,6 +196,7 @@ async function requestStructured<T>(input: {
   prompt: string;
   images?: string[];
   retryFeedback?: string;
+  signal?: AbortSignal;
 }) {
   if (input.prompt.length > importConfig.maxModelInputChars) {
     throw new Error(`Model prompt exceeds the configured ${importConfig.maxModelInputChars.toLocaleString()} character limit.`);
@@ -232,9 +234,12 @@ async function requestStructured<T>(input: {
           },
         ],
       }),
-      signal: AbortSignal.timeout(importConfig.modelTimeoutMs),
+      signal: input.signal
+        ? AbortSignal.any([input.signal, AbortSignal.timeout(importConfig.modelTimeoutMs)])
+        : AbortSignal.timeout(importConfig.modelTimeoutMs),
     }).catch((error: unknown) => {
       console.error(`[import] model request failed after ${Date.now() - startedAt}ms:`, error instanceof Error ? error.message : error);
+      if (input.signal?.aborted) throw new Error("Import was cancelled.");
       if (error instanceof Error && /timeout|aborted/i.test(error.message)) throw new Error(timeoutMessage());
       throw new Error(`Model provider request failed: ${error instanceof Error ? error.message : "unknown network error"}`);
     });
@@ -297,10 +302,11 @@ ${request.content}`;
     prompt,
     images,
     retryFeedback,
+    signal: request.signal,
   });
 }
 
-export async function inferCsvMapping(headers: string[], sampleRows: Record<string, string>[]): Promise<CsvMapping> {
+export async function inferCsvMapping(headers: string[], sampleRows: Record<string, string>[], signal?: AbortSignal): Promise<CsvMapping> {
   const system = `Map CSV columns from a financial account statement to a canonical transaction import.
 Return only the supplied schema. Use exact header strings from the input.
 dateOrder describes ambiguous numeric dates. positiveMeans describes a positive value in amountColumn.
@@ -313,6 +319,7 @@ If debit and credit columns exist, use them and set amountColumn to null.`;
         system,
         prompt: `Headers:\n${JSON.stringify(headers)}\n\nSample rows:\n${JSON.stringify(sampleRows.slice(0, 12), null, 2)}`,
         retryFeedback: attempt > 0 ? modelValidationFeedback(lastError) : undefined,
+        signal,
       });
     } catch (error) {
       lastError = error;
@@ -336,6 +343,7 @@ export async function convertWithModel(request: ConvertRequest): Promise<{ trans
   const seenWarnings = new Set<string>();
 
   for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    request.signal?.throwIfAborted();
     const chunkRequest = {
       ...request,
       sourceLabel: chunks.length > 1

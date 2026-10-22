@@ -20,6 +20,7 @@ import { candidateFingerprint, validateCandidate } from "@/lib/imports/validate"
 const validDate = /^\d{4}-\d{2}-\d{2}$/;
 const validAmount = /^-?(?:0|[1-9]\d{0,13})(?:\.\d{1,2})?$/;
 const visibleExtractionWarningLimit = 50;
+const cancellationPollMs = 2_000;
 
 function dateOrNull(value: string) {
   if (!validDate.test(value)) return null;
@@ -86,8 +87,8 @@ function itemCandidate(
 
 async function recoverBatch(workspaceId: string, batchId: string) {
   let batch = await getImportBatch(workspaceId, batchId);
-  if (!batch) throw new Error(`Import batch ${batchId} no longer exists.`);
-  if (["awaiting_review", "completed", "cancelled"].includes(batch.status)) return null;
+  // Deleted batches can still have a queued retry; there is nothing left to process.
+  if (!batch || ["awaiting_review", "completed", "cancelled"].includes(batch.status)) return null;
 
   if (["extracting", "converting", "validating"].includes(batch.status)) {
     batch = await updateImportBatchStatus(workspaceId, batchId, "failed", {
@@ -110,11 +111,20 @@ async function recoverBatch(workspaceId: string, batchId: string) {
 async function processImport(job: Job<ImportJobData>) {
   const work = await recoverBatch(job.data.workspaceId, job.data.batchId);
   if (!work) {
-    console.log(`[import] batch ${job.data.batchId}: already finished, nothing to do`);
+    console.log(`[import] batch ${job.data.batchId}: already finished or removed, nothing to do`);
     return;
   }
   console.log(`[import] batch ${job.data.batchId}: extracting ${work.batch.sourceKind}`);
   if (job.signal.aborted) throw new Error("Import job was cancelled before extraction.");
+
+  // Users cancel by changing the batch status; poll it so in-flight model calls stop promptly.
+  const cancellation = new AbortController();
+  const signal = AbortSignal.any([job.signal, cancellation.signal]);
+  const cancellationWatch = setInterval(() => {
+    void getImportBatch(job.data.workspaceId, work.batch.id)
+      .then((batch) => { if (!batch || batch.status === "cancelled") cancellation.abort(); })
+      .catch((error) => console.error("Could not check import cancellation", error));
+  }, cancellationPollMs);
 
   try {
     let conversionStarted = false;
@@ -122,12 +132,13 @@ async function processImport(job: Job<ImportJobData>) {
       storageKey: work.document.storageKey,
       kind: work.batch.sourceKind,
       accountCurrency: work.account.currency,
+      signal,
     }, async () => {
       if (conversionStarted) return;
       conversionStarted = true;
       await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "converting", { actorType: "worker" });
     });
-    if (job.signal.aborted) throw new Error("Import job was cancelled during extraction.");
+    if (signal.aborted) throw new Error("Import job was cancelled during extraction.");
     console.log(`[import] batch ${work.batch.id}: extracted ${result.candidates.length} candidates, ${result.warnings.length} warnings; validating`);
 
     const visibleWarnings = result.warnings.slice(0, visibleExtractionWarningLimit);
@@ -180,8 +191,13 @@ async function processImport(job: Job<ImportJobData>) {
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown import processing error.";
     const current = await getImportBatch(job.data.workspaceId, work.batch.id).catch(() => null);
+    // A user cancellation is a normal outcome, not a failure pg-boss should retry.
+    if (cancellation.signal.aborted || current?.status === "cancelled") {
+      console.log(`[import] batch ${work.batch.id}: cancelled, stopped processing`);
+      return;
+    }
+    const message = error instanceof Error ? error.message : "Unknown import processing error.";
     if (current && !["failed", "completed", "cancelled"].includes(current.status)) {
       await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "failed", {
         actorType: "worker",
@@ -190,6 +206,8 @@ async function processImport(job: Job<ImportJobData>) {
       }).catch((transitionError) => console.error("Could not persist import failure", transitionError));
     }
     throw error;
+  } finally {
+    clearInterval(cancellationWatch);
   }
 }
 

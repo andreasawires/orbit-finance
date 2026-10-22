@@ -21,7 +21,7 @@ export async function normalizeImage(inputPath: string, outputPath: string) {
     .toFile(outputPath);
 }
 
-export async function withRenderedPdfPage<T>(pdfPath: string, page: number, callback: (imagePath: string) => Promise<T>) {
+export async function withRenderedPdfPage<T>(pdfPath: string, page: number, callback: (imagePath: string) => Promise<T>, signal?: AbortSignal) {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "orbit-import-"));
   const prefix = path.join(tempDirectory, "page");
   const renderedPath = `${prefix}.png`;
@@ -36,7 +36,7 @@ export async function withRenderedPdfPage<T>(pdfPath: string, page: number, call
       "-png",
       pdfPath,
       prefix,
-    ], { timeout: 60_000, maxBuffer: 1024 * 1024 });
+    ], { timeout: 60_000, maxBuffer: 1024 * 1024, signal });
     await normalizeImage(renderedPath, normalizedPath);
     return await callback(normalizedPath);
   } catch (error) {

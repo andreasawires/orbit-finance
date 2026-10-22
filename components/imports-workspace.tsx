@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  CircleStop,
   Clock3,
   FileSpreadsheet,
   FileText,
@@ -16,6 +17,7 @@ import {
   PencilLine,
   RefreshCw,
   RotateCcw,
+  Trash2,
   UploadCloud,
   X,
   XCircle,
@@ -33,6 +35,7 @@ import { flattenCostCenters, type CostCenter } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
 import { useWorkspace } from "@/components/workspace-provider";
 import { TimeZoneSelect } from "@/components/time-zone-select";
+import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { isValidTimeZone } from "@/lib/time";
 
 type UnknownRecord = Record<string, unknown>;
@@ -159,6 +162,8 @@ const PROCESSING_STATUSES = new Set([
 const READY_STATUSES = new Set(["awaiting_review", "ready_for_review", "review"]);
 const COMPLETED_STATUSES = new Set(["completed", "approved", "inserted"]);
 const FAILED_STATUSES = new Set(["failed", "cancelled", "canceled"]);
+const CANCELLABLE_STATUSES = new Set(["uploaded", "queued", "extracting", "converting", "validating"]);
+const DELETABLE_STATUSES = new Set(["awaiting_review", "failed", "cancelled"]);
 
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === "object" && value !== null && !Array.isArray(value);
 const asString = (value: unknown, fallback = "") => typeof value === "string" ? value : value == null ? fallback : String(value);
@@ -377,6 +382,7 @@ function statusLabel(status: string) {
     approving: "Saving",
     completed: "Completed",
     failed: "Failed",
+    cancelled: "Cancelled",
     pending: "Needs review",
     approved: "Approved",
     rejected: "Rejected",
@@ -575,6 +581,9 @@ function BatchDetail({
   onApproveBatch,
   onPageChange,
   onRetry,
+  onCancel,
+  onDelete,
+  stopping,
   onOpenOriginal,
   statementTimezone,
   onStatementTimezoneChange,
@@ -589,6 +598,9 @@ function BatchDetail({
   onApproveBatch: () => Promise<void>;
   onPageChange: (page: number) => void;
   onRetry: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+  stopping: boolean;
   onOpenOriginal: ((page: number | null) => void) | null;
   statementTimezone: string;
   onStatementTimezoneChange: (timeZone: string) => void;
@@ -613,15 +625,18 @@ function BatchDetail({
       <div className={`import-file-icon large ${fileKind(batch.originalFilename, batch.mimeType)}`}><ImportFileIcon filename={batch.originalFilename} mimeType={batch.mimeType} size={22} /></div>
       <div className="import-detail-title"><h2>{batch.originalFilename}</h2><p>{batch.accountName || "Financial account"} · {formatBytes(document?.byteSize || batch.byteSize)}{document?.pageCount ? ` · ${document.pageCount} pages` : ""} · uploaded {formatDate(batch.createdAt, true)} · statement timezone {completed ? batch.statementTimezone : statementTimezone}</p></div>
       {document && onOpenOriginal && <button className="button secondary small import-original-link" onClick={() => onOpenOriginal(null)}><ExternalLink size={14} /> Open original</button>}
+      {DELETABLE_STATUSES.has(status) && <button className="button secondary small import-delete-button" onClick={onDelete} disabled={approving}><Trash2 size={14} /> Delete</button>}
       <StatusPill status={status} />
     </div>
 
     {processing && <div className="import-processing">
-      <div className="import-processing-copy"><LoaderCircle className="spin" size={20} /><div><strong>{statusLabel(status)} your statement</strong><span>You can leave this page. The worker will continue locally in the background.</span></div></div>
+      <div className="import-processing-copy"><LoaderCircle className="spin" size={20} /><div><strong>{statusLabel(status)} your statement</strong><span>You can leave this page. The worker will continue locally in the background.</span></div>{CANCELLABLE_STATUSES.has(status) && <button className="button secondary small" onClick={onCancel} disabled={stopping}>{stopping ? <LoaderCircle className="spin" size={15} /> : <CircleStop size={15} />} {stopping ? "Stopping…" : "Stop import"}</button>}</div>
       <div className="import-stage-track">{stageOrder.map((stage, index) => <div key={stage} className={index < stageIndex ? "done" : index === stageIndex ? "active" : ""}><i>{index < stageIndex ? <Check size={12} /> : index + 1}</i><span>{statusLabel(stage)}</span></div>)}</div>
     </div>}
 
-    {failed && <div className="import-failed"><XCircle size={21} /><div><strong>Import failed</strong><span>{batch.errorMessage || "The worker could not process this file. Check the worker logs for more detail."}</span></div><button className="button secondary small" onClick={onRetry}><RotateCcw size={15} /> Retry import</button></div>}
+    {failed && (status === "failed"
+      ? <div className="import-failed"><XCircle size={21} /><div><strong>Import failed</strong><span>{batch.errorMessage || "The worker could not process this file. Check the worker logs for more detail."}</span></div><button className="button secondary small" onClick={onRetry}><RotateCcw size={15} /> Retry import</button></div>
+      : <div className="import-failed"><CircleStop size={21} /><div><strong>Import cancelled</strong><span>Processing was stopped before review. Delete this import to upload the same file again.</span></div></div>)}
     {actionError && <div className="import-action-error"><AlertCircle size={17} /><span>{actionError}</span></div>}
     {!!document?.extractionWarnings.length && <div className="import-extraction-warnings"><AlertCircle size={17} /><div><strong>Extraction needs attention</strong>{document.extractionWarnings.map((warning, index) => <span key={`${warning}-${index}`}>{warning}</span>)}</div></div>}
 
@@ -676,6 +691,8 @@ export function ImportsWorkspace() {
   const [actionError, setActionError] = useState("");
   const [busyItemIds, setBusyItemIds] = useState<Set<string>>(() => new Set());
   const [approving, setApproving] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [uploadTimezoneChoice, setUploadTimezoneChoice] = useState("");
   const [approvalTimezones, setApprovalTimezones] = useState<Record<string, string>>({});
   const uploadTimezone = uploadTimezoneChoice || preferences.timezone;
@@ -930,6 +947,38 @@ export function ImportsWorkspace() {
     }
   };
 
+  const cancelBatch = async () => {
+    if (!selectedId || stopping) return;
+    setStopping(true);
+    setActionError("");
+    try {
+      const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/cancel`, { method: "POST" });
+      const body = await responseBody(response);
+      if (!response.ok) throw new Error(errorFromBody(body, "Could not stop this import."));
+      await Promise.all([refreshDetail(selectedId), loadBatches()]);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : "Could not stop this import.");
+      await refreshDetail(selectedId).catch(() => undefined);
+    } finally {
+      setStopping(false);
+    }
+  };
+
+  // Throws so the confirmation dialog stays open and shows the error.
+  const deleteBatch = async () => {
+    if (!selectedId) return;
+    const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}`, { method: "DELETE" });
+    const body = await responseBody(response);
+    if (!response.ok) throw new Error(errorFromBody(body, "Could not delete this import."));
+    const remaining = batches.filter((batch) => batch.id !== selectedId);
+    setBatches(remaining);
+    setDetail(null);
+    setActionError("");
+    setReviewPage(1);
+    setDetailLoading(!!remaining[0]);
+    setSelectedId(remaining[0]?.id || "");
+  };
+
   const openOriginal = useCallback(async (page: number | null) => {
     if (!selectedId) return;
     const response = await workspaceFetch(`/api/imports/${encodeURIComponent(selectedId)}/document`, { cache: "no-store" });
@@ -977,7 +1026,14 @@ export function ImportsWorkspace() {
 
     <div className="imports-layout">
       <BatchList batches={batches} selectedId={selectedId} loading={listLoading} onSelect={selectBatch} onRefresh={() => { void loadBatches(); if (selectedId) void refreshDetail(selectedId); }} />
-      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} statementTimezone={approvalTimezone} onStatementTimezoneChange={(timeZone) => { if (selectedId) setApprovalTimezones((current) => ({ ...current, [selectedId]: timeZone })); }} onOpenOriginal={(page) => { void openOriginal(page).catch((caught) => setActionError(caught instanceof Error ? caught.message : "Could not open the original document.")); }} />
+      <BatchDetail detail={detail?.batch.id === selectedId ? detail : null} loading={!!selectedId && detailLoading} actionError={actionError} busyItemIds={busyItemIds} approving={approving} costCenters={importCostCenters} onItemAction={updateItem} onApproveBatch={approveBatch} onPageChange={selectReviewPage} onRetry={() => void retryBatch()} onCancel={() => void cancelBatch()} onDelete={() => setConfirmingDelete(true)} stopping={stopping} statementTimezone={approvalTimezone} onStatementTimezoneChange={(timeZone) => { if (selectedId) setApprovalTimezones((current) => ({ ...current, [selectedId]: timeZone })); }} onOpenOriginal={(page) => { void openOriginal(page).catch((caught) => setActionError(caught instanceof Error ? caught.message : "Could not open the original document.")); }} />
     </div>
+
+    <ConfirmDeleteDialog open={confirmingDelete && !!selectedBatch} onClose={() => setConfirmingDelete(false)} title="Delete import?" confirmText={selectedBatch?.originalFilename ?? ""} action="Delete import"
+      impact={<><strong>This import and its review progress will be permanently deleted.</strong><ul>
+        <li>{selectedBatch?.itemCount ?? 0} transaction candidate{selectedBatch?.itemCount === 1 ? "" : "s"} and the processing history</li>
+        <li>The uploaded file, unless another import uses it</li>
+      </ul>Transactions already in your ledger are not affected.</>}
+      onConfirm={deleteBatch} />
   </div>;
 }
