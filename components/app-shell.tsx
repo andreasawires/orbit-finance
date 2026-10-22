@@ -11,12 +11,14 @@ import {
   Menu,
   PanelLeftClose,
   ReceiptText,
+  RefreshCw,
   Search,
   Settings,
   SlidersHorizontal,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useFinanceDataContext } from "@/components/finance-data-provider";
 import { useWorkspace } from "@/components/workspace-provider";
 
 const navItems = [
@@ -34,6 +36,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const { workspace, workspaces, loading: workspaceLoading, error: workspaceError, selectWorkspace } = useWorkspace();
+  const { refresh, refreshing } = useFinanceDataContext();
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
@@ -63,6 +66,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
 
         <div className="top-actions">
+          <button className="icon-button" onClick={() => void refresh()} disabled={refreshing || !workspace} aria-label="Refresh data" title="Reload from database"><RefreshCw size={18} className={refreshing ? "spin" : ""} /></button>
           <Link href="/settings" className="icon-button" aria-label="Settings"><Settings size={18} /></Link>
         </div>
       </header>
