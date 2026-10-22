@@ -1,4 +1,5 @@
 import "server-only";
+import type { PoolClient } from "pg";
 import { lockedAccountCurrency } from "@/lib/account-currency";
 import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction, Workspace } from "@/lib/data";
 import { db } from "@/lib/database";
@@ -168,8 +169,8 @@ export async function updateAccount(workspaceId: string, id: string, input: Reco
     [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), accountCurrency, input.color ?? "#573cf0", input.kind ?? "Checking", workspaceId, id]);
 }
 
-export async function createTransaction(workspaceId: string, input: Record<string, unknown>) {
-  await ensureDatabaseSchema();
+// Inserts one transaction (or both sides of a transfer) on a client that is already inside a transaction.
+async function insertTransaction(client: PoolClient, workspaceId: string, input: Record<string, unknown>) {
   const type = String(input.type) as Transaction["type"];
   const rawAmount = Math.abs(Number(input.amount));
   if (!Number.isFinite(rawAmount) || rawAmount === 0) throw new Error("Transaction amount must be greater than zero.");
@@ -179,24 +180,38 @@ export async function createTransaction(workspaceId: string, input: Record<strin
     const destinationAccountId = String(input.transferAccountId ?? "");
     if (!sourceAccountId || !destinationAccountId) throw new Error("Choose both the source and destination accounts.");
     if (sourceAccountId === destinationAccountId) throw new Error("A transfer must use two different accounts.");
-    const client = await db.connect();
-    try {
-      await client.query("BEGIN");
-      const transferId = (await client.query("SELECT gen_random_uuid() AS id")).rows[0].id;
-      await client.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, $5, -$6::numeric, 'Transfer', $7, $8)`, [workspaceId, occurredAt, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
-      await client.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, amount, type, transfer_id, transfer_account_id)
-        VALUES ($1, $2, $3, $4, $5, $6, 'Transfer', $7, $8)`, [workspaceId, occurredAt, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally { client.release(); }
+    const transferId = (await client.query("SELECT gen_random_uuid() AS id")).rows[0].id;
+    await client.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+      VALUES ($1, $2, $3, $4, $5, -$6::numeric, 'Transfer', $7, $8)`, [workspaceId, occurredAt, input.description, input.note ?? "", sourceAccountId, rawAmount, transferId, destinationAccountId]);
+    await client.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, amount, type, transfer_id, transfer_account_id)
+      VALUES ($1, $2, $3, $4, $5, $6, 'Transfer', $7, $8)`, [workspaceId, occurredAt, input.description, input.note ?? "", destinationAccountId, rawAmount, transferId, sourceAccountId]);
     return;
   }
   const amount = type === "Expense" ? -rawAmount : rawAmount;
-  await db.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, cost_center_id, amount, type)
+  await client.query(`INSERT INTO transactions (workspace_id, occurred_at, description, note, account_id, cost_center_id, amount, type)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [workspaceId, occurredAt, input.description, input.note ?? "", input.accountId, input.costCenterId || null, amount, type]);
+}
+
+export async function createTransaction(workspaceId: string, input: Record<string, unknown>) {
+  await createTransactions(workspaceId, [input], false);
+}
+
+// Saves every item or none, so a failed line can be fixed and resubmitted without duplicating the others.
+export async function createTransactions(workspaceId: string, items: Record<string, unknown>[], numbered = true) {
+  await ensureDatabaseSchema();
+  if (!items.length) throw new Error("Add at least one transaction.");
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    for (const [index, input] of items.entries()) {
+      try { await insertTransaction(client, workspaceId, input); }
+      catch (error) { throw numbered && error instanceof Error ? new Error(`Transaction ${index + 1}: ${error.message}`) : error; }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
 }
 
 export async function updateTransaction(workspaceId: string, id: string, input: Record<string, unknown>) {
@@ -233,6 +248,14 @@ export async function updateTransaction(workspaceId: string, id: string, input: 
     await client.query("ROLLBACK");
     throw error;
   } finally { client.release(); }
+}
+
+export async function assignCostCenter(workspaceId: string, ids: string[], costCenterId: string | null) {
+  await ensureDatabaseSchema();
+  if (!ids.length) throw new Error("Choose at least one transaction.");
+  if (costCenterId && !(await db.query("SELECT 1 FROM cost_centers WHERE workspace_id=$1 AND id=$2", [workspaceId, costCenterId])).rowCount) throw new Error("Cost center not found.");
+  // Transfers never carry a cost center, matching linkTransactionsAsTransfer.
+  await db.query("UPDATE transactions SET cost_center_id=$1, updated_at=now() WHERE workspace_id=$2 AND id = ANY($3::uuid[]) AND type <> 'Transfer'", [costCenterId, workspaceId, ids]);
 }
 
 export async function linkTransactionsAsTransfer(workspaceId: string, transactionId: string, counterpartTransactionId: string) {

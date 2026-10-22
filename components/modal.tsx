@@ -1,14 +1,14 @@
 "use client";
 
-import { Check, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, Plus, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { Account, CostCenter, Currency, Transaction } from "@/lib/data";
 import { flattenCostCenters, formatMoney } from "@/lib/data";
 import { formatDate, isIsoDate, todayInZone, utcToZonedDate, zonedDateToUtc } from "@/lib/time";
 
-export function Modal({ open, onClose, title, subtitle, children, action = "Save changes", onSubmit, footerStart, danger = false, submitDisabled = false, savingLabel = "Saving…" }: {
+export function Modal({ open, onClose, title, subtitle, children, action = "Save changes", onSubmit, footerStart, danger = false, submitDisabled = false, savingLabel = "Saving…", wide = false }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode; onSubmit?: (data: FormData) => Promise<unknown> | unknown;
-  footerStart?: React.ReactNode; danger?: boolean; submitDisabled?: boolean; savingLabel?: string;
+  footerStart?: React.ReactNode; danger?: boolean; submitDisabled?: boolean; savingLabel?: string; wide?: boolean;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -28,7 +28,7 @@ export function Modal({ open, onClose, title, subtitle, children, action = "Save
   }
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <form className="modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
+      <form className={`modal ${wide ? "wide" : ""}`} onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></div>
         <div className="modal-body">{children}</div>
         {error && <div className="form-error">{error}</div>}
@@ -81,7 +81,7 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
     {isReconciliation ? <>
       <input type="hidden" name="linkExistingTransfer" value="true" />
       <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency, locale)} · {formatDate(transaction.occurredAt, timeZone, locale)}</span></div>
-      <label className="full">Other account<select value={otherAccountId} onChange={(event) => setOtherAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{linkedAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+      {linkedAccounts.length ? <label className="full">Other account<select value={otherAccountId} onChange={(event) => setOtherAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{linkedAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label> : <div className="full form-hint"><strong>No other {transactionCurrency} accounts</strong><span>Transfers can only link accounts with the same currency. Add another {transactionCurrency} account to link this one.</span></div>}
       {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{formatDate(item.occurredAt, timeZone, locale)} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
     </> : <>
       <label className="full">Description<input name="description" defaultValue={transaction?.merchant} placeholder="What was this for?" required /></label>
@@ -91,5 +91,71 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
       {isTransfer ? <label>To account<select name="transferAccountId" value={transferAccountId} onChange={(event) => setTransferAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{accounts.filter((account) => account.id !== accountId).map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label> : <label>Cost center<select name="costCenterId" defaultValue={transaction?.costCenterId ?? ""}><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select></label>}
       <label className="full">Note<textarea name="note" defaultValue={transaction?.detail} placeholder="Add an optional note..." rows={3} /></label>
     </>}
+  </div>;
+}
+
+type BatchRow = { key: number; type: Transaction["type"]; description: string; amount: string; occurredOn: string; accountId: string; transferAccountId: string; costCenterId: string; note: string };
+
+const firstOtherAccountId = (accounts: Account[], accountId: string) => accounts.find((account) => account.id !== accountId)?.id ?? "";
+
+// Creates several transactions in one submit. Rows are controlled; the form posts them as one JSON field named "batch".
+export function BatchTransactionForm({ accounts, costCenters, timeZone = "UTC", onCountChange }: { accounts: Account[]; costCenters: CostCenter[]; timeZone?: string; onCountChange?: (count: number) => void }) {
+  const centers = flattenCostCenters(costCenters);
+  const nextKey = useRef(1);
+  const focusKey = useRef<number | null>(null);
+  const [rows, setRows] = useState<BatchRow[]>(() => {
+    const accountId = accounts[0]?.id ?? "";
+    return [{ key: 0, type: "Expense", description: "", amount: "", occurredOn: todayInZone(timeZone), accountId, transferAccountId: firstOtherAccountId(accounts, accountId), costCenterId: "", note: "" }];
+  });
+  const payload = rows.map((row) => ({
+    type: row.type, description: row.description, amount: row.amount, note: row.note, accountId: row.accountId,
+    occurredAt: isIsoDate(row.occurredOn) ? zonedDateToUtc(row.occurredOn, timeZone) : "",
+    ...(row.type === "Transfer" ? { transferAccountId: row.transferAccountId } : { costCenterId: row.costCenterId }),
+  }));
+
+  function update(key: number, patch: Partial<BatchRow>) {
+    setRows((current) => current.map((row) => {
+      if (row.key !== key) return row;
+      const next = { ...row, ...patch };
+      // A transfer can't land on its own source account.
+      if (next.transferAccountId === next.accountId) next.transferAccountId = firstOtherAccountId(accounts, next.accountId);
+      return next;
+    }));
+  }
+
+  function addRow() {
+    // New lines repeat the previous line's type, date and accounts, which is how statements are usually typed in.
+    const last = rows[rows.length - 1];
+    const key = nextKey.current++;
+    focusKey.current = key;
+    const next = [...rows, { ...last, key, description: "", amount: "", costCenterId: "", note: "" }];
+    setRows(next); onCountChange?.(next.length);
+  }
+
+  function removeRow(key: number) {
+    const next = rows.filter((row) => row.key !== key);
+    setRows(next); onCountChange?.(next.length);
+  }
+
+  return <div className="batch-form">
+    <input type="hidden" name="batch" value={JSON.stringify(payload)} />
+    <div className="batch-head" aria-hidden="true"><span>Type</span><span>Description</span><span>Amount</span><span>Date</span><span>Account</span><span>Cost center / To</span><span>Note</span><span /></div>
+    {rows.map((row, index) => {
+      const label = (field: string) => `${field} for transaction ${index + 1}`;
+      return <div className="batch-row" key={row.key}>
+        <select aria-label={label("Type")} value={row.type} onChange={(event) => update(row.key, { type: event.target.value as Transaction["type"] })}>{(["Expense", "Income", "Transfer"] as const).map((value) => <option key={value}>{value}</option>)}</select>
+        <input aria-label={label("Description")} value={row.description} onChange={(event) => update(row.key, { description: event.target.value })} placeholder="Description" required
+          ref={(input) => { if (input && focusKey.current === row.key) { input.focus(); focusKey.current = null; } }} />
+        <span className="batch-amount"><input aria-label={label("Amount")} value={row.amount} onChange={(event) => update(row.key, { amount: event.target.value })} type="number" min="0" step="0.01" placeholder="0.00" required /><small>{accounts.find((account) => account.id === row.accountId)?.currency}</small></span>
+        <input aria-label={label("Date")} type="date" value={row.occurredOn} onChange={(event) => update(row.key, { occurredOn: event.target.value })} required />
+        <select aria-label={label(row.type === "Transfer" ? "From account" : "Account")} value={row.accountId} onChange={(event) => update(row.key, { accountId: event.target.value })} required><option value="" disabled>Account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select>
+        {row.type === "Transfer"
+          ? <select aria-label={label("To account")} value={row.transferAccountId} onChange={(event) => update(row.key, { transferAccountId: event.target.value })} required><option value="" disabled>To account</option>{accounts.filter((account) => account.id !== row.accountId).map((account) => <option value={account.id} key={account.id}>→ {account.name}</option>)}</select>
+          : <select aria-label={label("Cost center")} value={row.costCenterId} onChange={(event) => update(row.key, { costCenterId: event.target.value })}><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select>}
+        <input aria-label={label("Note")} value={row.note} onChange={(event) => update(row.key, { note: event.target.value })} placeholder="Note (optional)" />
+        {rows.length > 1 ? <button type="button" className="icon-button batch-remove" aria-label={`Remove transaction ${index + 1}`} onClick={() => removeRow(row.key)}><X size={16} /></button> : <span />}
+      </div>;
+    })}
+    <button type="button" className="batch-add" onClick={addRow}><Plus size={15} /> Add another transaction</button>
   </div>;
 }

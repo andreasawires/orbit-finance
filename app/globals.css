@@ -168,6 +168,7 @@ button:disabled { opacity: .48; cursor: not-allowed; box-shadow: none!important;
 :root[data-theme="dark"] .table-summary,
 :root[data-theme="dark"] .tree-head,
 :root[data-theme="dark"] .settings-save { background: #201f27; }
+:root[data-theme="dark"] .form-hint { background: #201f27; border-color: var(--line); }
 :root[data-theme="dark"] .transaction-search input { background: transparent; color: var(--ink); }
 :root[data-theme="dark"] .account-detail-add,
 :root[data-theme="dark"] .add-account-card { background: rgba(36,34,44,.5); }
@@ -483,6 +484,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 .child-node { padding-left: calc(13px + var(--tree-depth) * 27px); color: var(--ink); }
 .branch-line { left: calc(15px + var(--tree-depth) * 27px); background: var(--line); }
 .child-bullet { flex: 0 0 auto; background: var(--paper); }
+.child-node .child-bullet { margin: 0 4px 0 28px; }
+.child-node .tree-toggle { width: 22px; margin-right: 4px; }
 .child-bullet:before { background: var(--line); }
 .add-child-row { padding-left: calc(67px + var(--tree-depth) * 27px); background: var(--paper); border-bottom-color: var(--line); }
 .add-child-row:hover { background: var(--wash); }
@@ -577,6 +580,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
   height: 100%;
   background: transparent;
   border-left: 1px solid var(--line);
+  pointer-events: none;
 }
 .branch-line::after {
   content: "";
@@ -605,3 +609,70 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 @media (max-width: 540px) {
   .add-child-row::before { left: calc(15px + (var(--tree-depth) + 1) * 22px); }
 }
+
+/* Bulk selection on the transactions ledger: the checkbox sits beside the row button, never inside it. */
+.transaction-select-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: stretch; background: white; border-bottom: 1px solid #f0eef3; }
+.transaction-select-row > .transaction-row { border-bottom: 0; padding-left: 4px; }
+/* The wrapper owns the row background so the checkbox cell and the row highlight together. */
+.transaction-select-row > .transaction-row,
+.transaction-select-row > .transaction-row:not(.table-header):hover,
+:root[data-theme="dark"] .transaction-select-row > .transaction-row { background: transparent; }
+.transaction-select-row.table-header { background: #fbfbfc; }
+.transaction-select-row:not(.table-header):hover { background: #fbfaff; }
+.transaction-select-row.selected { background: #f7f5ff; }
+.row-check { position: relative; display: grid; place-items: center; padding-left: 12px; cursor: pointer; user-select: none; }
+.row-check input { position: absolute; opacity: 0; pointer-events: none; }
+.row-check input:checked + .account-filter-check, .row-check input:indeterminate + .account-filter-check { border-color: var(--purple); background: var(--purple); color: white; }
+.row-check:focus-within .account-filter-check { box-shadow: 0 0 0 3px rgba(87,60,240,.18); }
+.row-check.disabled { cursor: not-allowed; opacity: .35; }
+.row-check-dash { width: 8px; height: 2px; border-radius: 1px; background: currentColor; }
+.bulk-bar { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--purple-pale); color: var(--purple); font-size: 13px; }
+.bulk-bar > span { margin-right: auto; }
+.bulk-bar .button { height: 34px; padding: 0 12px; font-size: 13px; }
+@media (max-width: 540px) {
+  .transaction-select-row { grid-template-columns: 34px minmax(0, 1fr); }
+  .row-check { padding-left: 10px; }
+  .bulk-bar { padding-inline: 14px; }
+}
+:root[data-theme="dark"] .transaction-select-row { background: var(--paper); }
+:root[data-theme="dark"] .transaction-select-row:not(.table-header):hover,
+:root[data-theme="dark"] .transaction-select-row.selected { background: #2c2a35; }
+
+/* The transactions page fills the viewport so the toolbar and summaries stay put while only the list scrolls. */
+.main-content:has(.transactions-page) { padding-top: calc(var(--topbar) + 20px); padding-bottom: 16px; }
+.transactions-page { max-width: none; height: calc(100dvh - var(--topbar) - 36px); min-height: 520px; display: flex; flex-direction: column; }
+.transactions-page > .page-heading { margin-bottom: 16px; }
+.transactions-page > .data-error, .transactions-page > .page-heading { flex: 0 0 auto; }
+.transactions-page .transaction-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.transaction-workspace > :not(.transaction-scroll) { flex: 0 0 auto; }
+.transaction-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; }
+.transaction-scroll > .empty-state { flex: 1; }
+.transaction-scroll .transaction-table > .table-header { position: sticky; top: 0; z-index: 2; }
+@media (max-width: 900px) {
+  .main-content:has(.transactions-page) { padding-top: 80px; padding-bottom: 14px; }
+  .transactions-page { height: calc(100dvh - 94px); }
+}
+
+/* Batch "New transactions" modal: one compact horizontal line per transaction. */
+.modal.wide { width: min(1180px, 100%); }
+.batch-form { display: flex; flex-direction: column; gap: 8px; }
+.batch-head, .batch-row { display: grid; grid-template-columns: 112px minmax(160px,1.6fr) 124px 142px minmax(130px,1fr) minmax(140px,1fr) minmax(120px,1fr) 32px; gap: 8px; align-items: center; }
+.batch-head { padding: 0 2px; color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.batch-row input, .batch-row select { width: 100%; min-width: 0; min-height: 38px; border: 1px solid #dedce6; border-radius: 8px; padding: 7px 9px; background: white; color: var(--ink); font-size: 13px; outline: none; }
+.batch-row input:focus, .batch-row select:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(87,60,240,.1); }
+.batch-amount { position: relative; display: block; }
+.batch-amount input { padding-right: 40px; }
+.batch-amount small { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 11px; pointer-events: none; }
+.batch-remove { width: 32px; height: 32px; color: var(--muted); }
+.batch-remove:hover { background: var(--wash); color: var(--red); }
+.batch-add { margin-top: 4px; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px dashed #cfcbe0; border-radius: 9px; background: transparent; color: var(--purple); font-weight: 650; cursor: pointer; }
+.batch-add:hover { background: var(--purple-pale); border-color: var(--purple); }
+@media (max-width: 900px) {
+  .batch-head { display: none; }
+  .batch-row { grid-template-columns: 1fr 1fr 32px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+  .batch-row > :nth-child(2), .batch-row > :nth-child(7) { grid-column: 1 / 3; }
+  .batch-row > :last-child { grid-column: 3; grid-row: 1; }
+}
+:root[data-theme="dark"] .batch-row input,
+:root[data-theme="dark"] .batch-row select { background: var(--paper); color: var(--ink); }
+:root[data-theme="dark"] .batch-remove:hover { background: #302e38; }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAccount, createCostCenter, createCurrency, createTransaction, deleteAccount, deleteAllData, deleteCostCenter, deleteCurrency, deleteTransaction, getFinanceData, linkTransactionsAsTransfer, savePreferences, updateAccount, updateCurrency, updateTransaction } from "@/lib/db";
+import { assignCostCenter, createAccount, createCostCenter, createCurrency, createTransaction, createTransactions, deleteAccount, deleteAllData, deleteCostCenter, deleteCurrency, deleteTransaction, getFinanceData, linkTransactionsAsTransfer, savePreferences, updateAccount, updateCurrency, updateTransaction } from "@/lib/db";
 import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
 
 function failure(error: unknown) {
@@ -8,7 +8,7 @@ function failure(error: unknown) {
   const workspace = workspaceRequestFailure(error);
   if (workspace.status !== 503) return NextResponse.json({ error: workspace.message }, { status: workspace.status });
   if (/not found/i.test(message)) return NextResponse.json({ error: message }, { status: 404 });
-  if (/confirmation does not match|valid timezone|must be an ISO timestamp|is invalid\./i.test(message)) return NextResponse.json({ error: message }, { status: 400 });
+  if (/confirmation does not match|valid timezone|must be an ISO timestamp|is invalid\.|must be greater than zero|Choose both|two different accounts|at least one transaction/i.test(message)) return NextResponse.json({ error: message }, { status: 400 });
   return NextResponse.json({ error: `Database unavailable: ${message}` }, { status: 503 });
 }
 
@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
     const { resource, data } = await request.json();
     if (resource === "account") await createAccount(workspace.id, data);
     else if (resource === "transaction") await createTransaction(workspace.id, data);
+    else if (resource === "transactions") await createTransactions(workspace.id, Array.isArray(data?.items) ? data.items : []);
     else if (resource === "costCenter") await createCostCenter(workspace.id, data);
     else if (resource === "currency") await createCurrency(workspace.id, data);
     else return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
@@ -38,6 +39,7 @@ export async function PATCH(request: NextRequest) {
     const { resource, id, data } = await request.json();
     if (resource === "account") await updateAccount(workspace.id, id, data);
     else if (resource === "transaction") await updateTransaction(workspace.id, id, data);
+    else if (resource === "transactionCostCenter") await assignCostCenter(workspace.id, Array.isArray(data?.ids) ? data.ids.map(String) : [], data?.costCenterId ? String(data.costCenterId) : null);
     else if (resource === "transactionTransferLink") await linkTransactionsAsTransfer(workspace.id, String(id ?? ""), String(data.counterpartTransactionId ?? ""));
     else if (resource === "currency") await updateCurrency(workspace.id, id, data);
     else if (resource === "preferences") await savePreferences(workspace.id, data);

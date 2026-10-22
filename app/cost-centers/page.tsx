@@ -74,8 +74,8 @@ function CostCenterNode({
         <span className="tree-color" style={{ background: center.color }}><CircleDollarSign size={15} /></span>
       </> : <>
         <span className="branch-line" />
-        {hasChildren ? <button className="tree-toggle" onClick={() => onToggle(center.id)} aria-label={`${isExpanded ? "Collapse" : "Expand"} ${center.name}`} aria-expanded={isExpanded}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button> : <span className="tree-toggle tree-toggle-spacer" />}
         <span className="child-bullet" style={{ borderColor: center.color }} />
+        {hasChildren ? <button className="tree-toggle" onClick={() => onToggle(center.id)} aria-label={`${isExpanded ? "Collapse" : "Expand"} ${center.name}`} aria-expanded={isExpanded}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button> : <span className="tree-toggle tree-toggle-spacer" />}
       </>}
       <strong className="tree-node-name">{center.name}</strong>
       {hasChildren && <span className="child-count">{center.children.length} {center.children.length === 1 ? "child" : "children"}</span>}

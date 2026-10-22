@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, CreditCard, Eye, EyeOff, Landmark, Plus, Trash2, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
-import { AccountForm, Modal, TransactionForm } from "@/components/modal";
+import { AccountForm, BatchTransactionForm, Modal, TransactionForm } from "@/components/modal";
 import { TransactionList } from "@/components/transaction-list";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
 import { groupCurrencyAmounts, transactionFlows } from "@/lib/currency-summary";
@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [showBalance, setShowBalance] = useState(true);
   const [accountModal, setAccountModal] = useState(false);
   const [transactionModal, setTransactionModal] = useState(false);
+  const [newCount, setNewCount] = useState(1);
   const [selected, setSelected] = useState<Transaction | null>(null);
   const [linkMode, setLinkMode] = useState(false);
   const [deleting, setDeleting] = useState<Transaction | null>(null);
@@ -41,18 +42,9 @@ export default function Dashboard() {
   return <div className="page dashboard-page">
     <div className="page-heading dashboard-heading">
       <div><div className="eyebrow">Overview</div><h1>Your finances</h1><p>A current view of the data stored in Orbit.</p></div>
-      <button className="button primary" disabled={!accounts.length} onClick={() => setTransactionModal(true)}><Plus size={17} /> New transaction</button>
+      <button className="button primary" disabled={!accounts.length} onClick={() => { setNewCount(1); setTransactionModal(true); }}><Plus size={17} /> New transaction</button>
     </div>
     {error && <div className="data-error"><strong>Could not connect to PostgreSQL.</strong><span>{error}</span><code>docker compose up -d</code></div>}
-    {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
-
-    <section className="stats-grid">
-      <div className="stat-card total-stat"><div className="stat-top"><span className="stat-icon purple"><WalletCards size={18} /></span><span>Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span><button className="icon-button mini" onClick={() => setShowBalance((v) => !v)}>{showBalance ? <Eye size={16} /> : <EyeOff size={16} />}</button></div><small>Total balance</small><strong>{showBalance ? <CurrencyAmounts values={totals.balance} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /> : "••••••••"}</strong></div>
-      <div className="stat-card"><div className="stat-top"><span className="stat-icon green"><ArrowDownRight size={18} /></span><span>Recorded</span></div><small>Total income</small><strong><CurrencyAmounts values={totals.inflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></div>
-      <div className="stat-card"><div className="stat-top"><span className="stat-icon orange"><ArrowUpRight size={18} /></span><span>Recorded</span></div><small>Total expenses</small><strong><CurrencyAmounts values={totals.outflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></div>
-      <div className="stat-card insight-stat"><span className="stat-icon lilac"><WalletCards size={18} /></span><div><small>Net cash flow</small><strong><CurrencyAmounts values={totals.net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><p>Income less expenses in the database.</p></div></div>
-    </section>
-
     <section className="section-block">
       <div className="section-title"><div><h2>Your accounts</h2><p>Balances across all saved accounts</p></div><Link href="/accounts">Manage accounts <ArrowRight size={15} /></Link></div>
       <div className="account-scroll">
@@ -66,13 +58,23 @@ export default function Dashboard() {
       {!loading && !accounts.length && !error && <div className="inline-empty">No accounts yet. Add one to start recording transactions.</div>}
     </section>
 
+    {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
+
+    <section className="stats-grid">
+      <div className="stat-card total-stat"><div className="stat-top"><span className="stat-icon purple"><WalletCards size={18} /></span><span>Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span><button className="icon-button mini" onClick={() => setShowBalance((v) => !v)}>{showBalance ? <Eye size={16} /> : <EyeOff size={16} />}</button></div><small>Total balance</small><strong>{showBalance ? <CurrencyAmounts values={totals.balance} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /> : "••••••••"}</strong></div>
+      <div className="stat-card"><div className="stat-top"><span className="stat-icon green"><ArrowDownRight size={18} /></span><span>Recorded</span></div><small>Total income</small><strong><CurrencyAmounts values={totals.inflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></div>
+      <div className="stat-card"><div className="stat-top"><span className="stat-icon orange"><ArrowUpRight size={18} /></span><span>Recorded</span></div><small>Total expenses</small><strong><CurrencyAmounts values={totals.outflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></div>
+      <div className="stat-card insight-stat"><span className="stat-icon lilac"><WalletCards size={18} /></span><div><small>Net cash flow</small><strong><CurrencyAmounts values={totals.net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><p>Income less expenses in the database.</p></div></div>
+    </section>
+
     <section className="panel transactions-panel">
       <div className="panel-head transaction-panel-head"><div><h2>Latest transactions</h2><p>Your most recent saved activity</p></div><div className="inline-filters">{filters.map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><Link href="/transactions" className="view-all">View all <ArrowRight size={15} /></Link></div>
       {visible.length ? <TransactionList items={visible} compact locale={preferences.locale} timeZone={preferences.timezone} onSelect={setSelected} /> : <div className="empty-state">{loading ? "Loading transactions…" : "No transactions to show."}</div>}
     </section>
 
     <Modal open={accountModal} onClose={() => setAccountModal(false)} title="Add a new account" action="Add account" onSubmit={(form) => mutate("POST", { resource: "account", data: values(form) })}><AccountForm currencies={currencies} /></Modal>
-    <Modal open={transactionModal || !!selected} onClose={() => { setTransactionModal(false); setSelected(null); setLinkMode(false); }} footerStart={selected ? <button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); setLinkMode(false); }}><Trash2 size={15} /> Delete</button> : null} title={selected ? "Edit transaction" : "New transaction"} subtitle={selected ? `Update ${selected.merchant}.` : "Record a real transaction."} action={linkMode ? "Link as transfer" : selected ? "Save changes" : "Add transaction"} onSubmit={(form) => { const data = values(form); return mutate(selected ? "PATCH" : "POST", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transactions={transactions} transaction={selected} locale={preferences.locale} timeZone={preferences.timezone} onTransferLinkModeChange={setLinkMode} /></Modal>
+    <Modal open={!!selected} onClose={() => { setSelected(null); setLinkMode(false); }} footerStart={<button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); setLinkMode(false); }}><Trash2 size={15} /> Delete</button>} title="Edit transaction" subtitle={selected ? `Update ${selected.merchant}.` : undefined} action={linkMode ? "Link as transfer" : "Save changes"} onSubmit={(form) => { const data = values(form); return mutate("PATCH", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transactions={transactions} transaction={selected} locale={preferences.locale} timeZone={preferences.timezone} onTransferLinkModeChange={setLinkMode} /></Modal>
+    <Modal wide open={transactionModal} onClose={() => setTransactionModal(false)} title="New transactions" subtitle="One line per transaction. Use + to add more." action={newCount === 1 ? "Add transaction" : `Add ${newCount} transactions`} onSubmit={(form) => mutate("POST", { resource: "transactions", data: { items: JSON.parse(String(form.get("batch"))) } })}><BatchTransactionForm accounts={accounts} costCenters={costCenters} timeZone={preferences.timezone} onCountChange={setNewCount} /></Modal>
     <ConfirmDeleteDialog open={!!deleting} onClose={() => setDeleting(null)} title="Delete transaction?" confirmText={deleting?.merchant ?? ""}
       impact={deleting?.transferId
         ? <><strong>This transfer will be permanently deleted.</strong><span>Both sides are removed: {deleting.amount < 0 ? `${deleting.account} → ${deletingCounterpart}` : `${deletingCounterpart} → ${deleting.account}`}.</span></>
