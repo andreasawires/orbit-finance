@@ -109,7 +109,11 @@ async function recoverBatch(workspaceId: string, batchId: string) {
 
 async function processImport(job: Job<ImportJobData>) {
   const work = await recoverBatch(job.data.workspaceId, job.data.batchId);
-  if (!work) return;
+  if (!work) {
+    console.log(`[import] batch ${job.data.batchId}: already finished, nothing to do`);
+    return;
+  }
+  console.log(`[import] batch ${job.data.batchId}: extracting ${work.batch.sourceKind}`);
   if (job.signal.aborted) throw new Error("Import job was cancelled before extraction.");
 
   try {
@@ -124,6 +128,7 @@ async function processImport(job: Job<ImportJobData>) {
       await updateImportBatchStatus(job.data.workspaceId, work.batch.id, "converting", { actorType: "worker" });
     });
     if (job.signal.aborted) throw new Error("Import job was cancelled during extraction.");
+    console.log(`[import] batch ${work.batch.id}: extracted ${result.candidates.length} candidates, ${result.warnings.length} warnings; validating`);
 
     const visibleWarnings = result.warnings.slice(0, visibleExtractionWarningLimit);
     if (result.warnings.length > visibleExtractionWarningLimit) {
@@ -197,8 +202,19 @@ async function processImportWithLock(job: Job<ImportJobData>) {
       [job.data.batchId],
     );
     locked = result.rows[0]?.locked === true;
-    if (!locked) return;
-    await processImport(job);
+    if (!locked) {
+      console.log(`[import] job ${job.id} batch ${job.data.batchId}: skipped, batch lock held by another worker`);
+      return;
+    }
+    const startedAt = Date.now();
+    console.log(`[import] job ${job.id} batch ${job.data.batchId}: started`);
+    try {
+      await processImport(job);
+      console.log(`[import] job ${job.id} batch ${job.data.batchId}: finished in ${Date.now() - startedAt}ms`);
+    } catch (error) {
+      console.error(`[import] job ${job.id} batch ${job.data.batchId}: failed after ${Date.now() - startedAt}ms:`, error instanceof Error ? error.message : error);
+      throw error;
+    }
   } finally {
     if (locked) {
       await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [job.data.batchId])

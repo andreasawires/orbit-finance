@@ -346,6 +346,7 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
   const warnings: string[] = [];
   const pdfPath = resolveStorageKey(request.storageKey);
   let statementContext = shortStatementContext(extracted.pages[0]?.markdown ?? "");
+  console.log(`[import] PDF: ${extracted.pages.length} pages, ${extracted.pages.filter((page) => page.needsOcr).length} need OCR`);
   await onStage?.("converting");
   const addResult = (result: Awaited<ReturnType<typeof convertWithModel>>, pageNumbers: number[]) => {
     const pageSet = new Set(pageNumbers);
@@ -378,6 +379,7 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
     const page = extracted.pages[pageIndex]!;
     const pageNumber = page.page + 1;
     if (page.needsOcr) {
+      console.log(`[import] PDF page ${pageNumber}: rendering for visual conversion`);
       const result = await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
         accountCurrency: request.accountCurrency,
         sourceLabel: `PDF page ${pageNumber} (visual source)`,
@@ -397,6 +399,7 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
       pageIndex += 1;
     }
     const pageNumbers = nativePages.map((nativePage) => nativePage.page + 1);
+    console.log(`[import] PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)}: converting native text`);
     const result = await convertWithModel({
       accountCurrency: request.accountCurrency,
       sourceLabel: `PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)} (native text)`,
