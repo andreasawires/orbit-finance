@@ -133,11 +133,13 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
         COALESCE(SUM(ABS(t.amount)) FILTER (WHERE t.type = 'Expense'), 0) AS expense
       ${TRANSACTION_FROM} WHERE ${where} GROUP BY a.currency, 2`, [...params, unit, timeZone]),
     db.query(`SELECT t.cost_center_id, a.currency, SUM(ABS(t.amount)) AS amount
-      ${TRANSACTION_FROM} WHERE ${where} AND t.type = 'Expense' AND t.cost_center_id IS NOT NULL
+      ${TRANSACTION_FROM} WHERE ${where} AND t.type = 'Expense'
       GROUP BY t.cost_center_id, a.currency`, params),
     db.query("SELECT * FROM cost_centers WHERE workspace_id = $1 ORDER BY created_at, name", [workspaceId]),
   ]);
-  const centers = buildTree(centersResult.rows, spendResult.rows, mainCurrency);
+  const centers = buildTree(centersResult.rows, spendResult.rows.filter((row) => row.cost_center_id), mainCurrency);
+  // Expenses without a cost center become one extra slice, so the breakdown adds up to all spend.
+  const uncategorized = new Map(spendResult.rows.filter((row) => !row.cost_center_id).map((row) => [String(row.currency), Number(row.amount)]));
   const currencies = currenciesFor(bucketResult.rows.map((row) => ({ currency: String(row.currency), amount: 0 })));
   return {
     range, granularity: unit, buckets,
@@ -151,9 +153,10 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
         currency, income, expense, net, rate: income ? (net / income) * 100 : 0,
         expenseCount: rows.reduce((sum, row) => sum + Number(row.expense_count), 0),
         buckets: buckets.map((key) => ({ income: Number(byBucket.get(key)?.income ?? 0), expense: Number(byBucket.get(key)?.expense ?? 0) })),
-        costCenters: centers
-          .map((center) => ({ id: center.id, name: center.name, color: center.color, total: center.spend.find((value: CurrencyAmount) => value.currency === currency)?.amount ?? 0 }))
-          .filter((center) => center.total > 0),
+        costCenters: [
+          ...centers.map((center) => ({ id: center.id, name: center.name, color: center.color, total: center.spend.find((value: CurrencyAmount) => value.currency === currency)?.amount ?? 0 })),
+          { id: UNCATEGORIZED, name: "Uncategorized", color: "var(--soft)", total: uncategorized.get(currency) ?? 0 },
+        ].filter((center) => center.total > 0),
       };
     }),
   };

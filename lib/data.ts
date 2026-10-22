@@ -103,7 +103,7 @@ export type ReportCurrencyView = {
   expenseCount: number;
   /** Aligned with FinanceReport.buckets. */
   buckets: Array<{ income: number; expense: number }>;
-  /** Root cost centers with their rolled-up expenses in this currency. */
+  /** Root cost centers with their rolled-up expenses in this currency, then "uncategorized" for expenses without one. */
   costCenters: Array<{ id: string; name: string; color: string; total: number }>;
 };
 

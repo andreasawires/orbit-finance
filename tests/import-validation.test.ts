@@ -150,9 +150,11 @@ test("model conversion sends Chat Completions JSON schema requests with image da
       imagePath,
     });
     assert.equal(result.transactions.length, 1);
-    assert.equal((request?.model), "test-vision");
-    assert.equal(((request?.response_format as { type?: string }).type), "json_schema");
-    const messages = request?.messages as Array<Record<string, unknown>>;
+    // TypeScript doesn't see the assignment inside the fetch stub and would narrow `request` to null here.
+    const sent = request as Record<string, unknown> | null;
+    assert.equal((sent?.model), "test-vision");
+    assert.equal(((sent?.response_format as { type?: string }).type), "json_schema");
+    const messages = sent?.messages as Array<Record<string, unknown>>;
     const userContent = messages[1].content as Array<Record<string, unknown>>;
     assert.match(String(((userContent[1].image_url as { url?: string }).url)), /^data:image\/png;base64,/);
   } finally {
