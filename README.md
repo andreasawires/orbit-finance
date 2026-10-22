@@ -38,6 +38,8 @@ For Ollama running on the Docker host, use `MODEL_BASE_URL=http://host.docker.in
 
 Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by default). `MODEL_MAX_INPUT_CHARS` bounds the combined native-PDF text sent to the model in one request: consecutive text pages are combined and split only when this limit is exceeded. Set it below the model's usable context window, leaving room for the importer prompt, JSON schema, and response. OCR/image pages are handled separately. `MODEL_STRUCTURED_OUTPUT=auto` tries JSON Schema first, then caches a JSON-mode fallback if the endpoint rejects schema output; set it to `json_schema` or `json_object` to require one mode.
 
+`DATABASE_URL` in `.env` is the only database setting. The example points at the bundled Postgres service (`database:5432`). Replace it with a remote Postgres URL to use that database from Docker instead. The bundled Postgres container still starts because migrations wait for it to be healthy.
+
 After configuration, run `docker compose up -d --build`. Open [http://localhost:3000/imports](http://localhost:3000/imports), or from another device on the same network use `http://<your-computer-lan-ip>:3000/imports`. Set `WEB_BIND_ADDRESS=127.0.0.1` in `.env` to keep the web UI on this machine.
 
 ## Run the app and worker from source
@@ -58,7 +60,7 @@ npm run worker
 
 The development server listens on all interfaces, so it is also available at `http://<your-computer-lan-ip>:3000`. If you use a host firewall, allow inbound TCP port 3000 only from your local network.
 
-For this mode, configure `MODEL_BASE_URL`, `MODEL_NAME`, and (when needed) `MODEL_API_KEY` in `.env.local`. The default database connection is `postgresql://orbit:orbit@localhost:5433/orbit_finance`.
+For this mode, configure `MODEL_BASE_URL`, `MODEL_NAME`, and (when needed) `MODEL_API_KEY` in `.env.local`. Set `DATABASE_URL` to `postgresql://orbit:orbit@localhost:5433/orbit_finance` so the host app can reach the published Postgres port. A remote Postgres URL works here too.
 
 ## Import limits
 

@@ -7,7 +7,7 @@ x-app-build: &app-build
     target: runtime
 
 x-app-environment: &app-environment
-  DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://orbit:orbit@database:5432/orbit_finance}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://orbit:orbit@database:5432/orbit_finance}
   IMPORT_STORAGE_PATH: /app/data/imports
   IMPORT_MAX_PDF_MB: ${IMPORT_MAX_PDF_MB:-25}
   IMPORT_MAX_PDF_PAGES: ${IMPORT_MAX_PDF_PAGES:-50}
