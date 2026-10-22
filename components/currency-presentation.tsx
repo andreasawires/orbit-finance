@@ -97,6 +97,7 @@ export function CurrencyAmounts({
   mode = "native",
   rates,
   sign,
+  signed = false,
   className = "",
 }: {
   values: CurrencyAmount[];
@@ -105,6 +106,8 @@ export function CurrencyAmounts({
   mode?: CurrencyDisplayMode;
   rates?: FxRateMap | null;
   sign?: "+" | "−";
+  /** Prefixes positive amounts with "+" and colors each amount by its own sign. */
+  signed?: boolean;
   className?: string;
 }) {
   const native = sortCurrencyAmounts(values, mainCurrency);
@@ -116,7 +119,7 @@ export function CurrencyAmounts({
     }, 0)
     : null;
   const shown = converted === null ? native : [{ currency: mainCurrency, amount: converted }];
-  return <span className={`currency-amounts ${className}`.trim()}>{shown.map((value) => <span key={value.currency}>{sign}{formatMoney(value.amount, value.currency, locale)}</span>)}</span>;
+  return <span className={`currency-amounts ${className}`.trim()}>{shown.map((value) => <span key={value.currency} className={signed ? value.amount > 0 ? "positive" : value.amount < 0 ? "negative" : "" : undefined}>{sign}{signed && value.amount > 0 ? "+" : ""}{formatMoney(value.amount, value.currency, locale)}</span>)}</span>;
 }
 
 export function hasConvertibleCurrencies(values: CurrencyAmount[]) {
