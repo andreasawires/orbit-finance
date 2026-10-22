@@ -4,31 +4,12 @@ import { ChevronDown, ChevronRight, CircleDollarSign, MoreHorizontal, Plus, Sear
 import { useMemo, useState, type CSSProperties } from "react";
 import { Modal } from "@/components/modal";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation, type CurrencyDisplayMode } from "@/components/currency-presentation";
-import { groupCurrencyAmounts, type CurrencyAmount, type FxRateMap } from "@/lib/currency-summary";
-import { flattenCostCenters, type CostCenter, type Transaction } from "@/lib/data";
+import type { CurrencyAmount, FxRateMap } from "@/lib/currency-summary";
+import { flattenCostCenters, type CostCenter } from "@/lib/data";
 import { useFinanceData } from "@/lib/use-finance-data";
 
 function matchesCostCenter(center: CostCenter, query: string): boolean {
   return center.name.toLocaleLowerCase().includes(query) || center.children.some((child) => matchesCostCenter(child, query));
-}
-
-function costCenterSpending(centers: CostCenter[], transactions: Transaction[], mainCurrency: string) {
-  const direct = new Map<string, CurrencyAmount[]>();
-  for (const transaction of transactions) {
-    if (transaction.type !== "Expense" || !transaction.costCenterId) continue;
-    const values = direct.get(transaction.costCenterId) ?? [];
-    values.push({ currency: transaction.currency, amount: Math.abs(transaction.amount) });
-    direct.set(transaction.costCenterId, values);
-  }
-  const totals = new Map<string, CurrencyAmount[]>();
-  const rollup = (center: CostCenter): CurrencyAmount[] => {
-    const values = [...(direct.get(center.id) ?? []), ...center.children.flatMap(rollup)];
-    const grouped = groupCurrencyAmounts(values, mainCurrency);
-    totals.set(center.id, grouped);
-    return grouped;
-  };
-  centers.forEach(rollup);
-  return totals;
 }
 
 function CostCenterNode({
@@ -94,7 +75,7 @@ function CostCenterNode({
 }
 
 export default function CostCentersPage() {
-  const { costCenters, transactions, preferences, loading, error, mutate } = useFinanceData();
+  const { costCenters, preferences, loading, error, mutate } = useFinanceData();
   const [expanded, setExpanded] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [modal, setModal] = useState(false);
@@ -103,9 +84,10 @@ export default function CostCentersPage() {
   const toggle = (id: string) => setExpanded((old) => old.includes(id) ? old.filter((i) => i !== id) : [...old, id]);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const groups = normalizedQuery ? costCenters.filter((center) => matchesCostCenter(center, normalizedQuery)) : costCenters;
-  const allCenters = flattenCostCenters(costCenters);
-  const spending = useMemo(() => costCenterSpending(costCenters, transactions, preferences.currency), [costCenters, preferences.currency, transactions]);
-  const presentationValues = useMemo(() => transactions.filter((transaction) => transaction.type === "Expense" && transaction.costCenterId).map((transaction) => ({ currency: transaction.currency, amount: Math.abs(transaction.amount) })), [transactions]);
+  const allCenters = useMemo(() => flattenCostCenters(costCenters), [costCenters]);
+  // Spend arrives from the server already rolled up through each center's descendants.
+  const spending = useMemo(() => new Map<string, CurrencyAmount[]>(allCenters.map((center) => [center.id, center.spend])), [allCenters]);
+  const presentationValues = useMemo(() => costCenters.flatMap((center) => center.spend), [costCenters]);
   const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
   const addChild = (center: CostCenter) => { setParent(center); setModal(true); };
   return <div className="page">

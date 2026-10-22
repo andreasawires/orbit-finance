@@ -1,22 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assignCostCenter, createAccount, createCostCenter, createCurrency, createTransaction, createTransactions, deleteAccount, deleteAllData, deleteCostCenter, deleteCurrency, deleteTransaction, getFinanceData, linkTransactionsAsTransfer, savePreferences, updateAccount, updateCurrency, updateTransaction } from "@/lib/db";
-import { requireRequestWorkspace, workspaceRequestFailure } from "@/lib/workspace-request";
-
-function failure(error: unknown) {
-  console.error(error);
-  const message = error instanceof Error ? error.message : "Unknown database error";
-  const workspace = workspaceRequestFailure(error);
-  if (workspace.status !== 503) return NextResponse.json({ error: workspace.message }, { status: workspace.status });
-  if (/not found/i.test(message)) return NextResponse.json({ error: message }, { status: 404 });
-  if (/confirmation does not match|valid timezone|must be an ISO timestamp|is invalid\.|must be greater than zero|Choose both|two different accounts|at least one transaction/i.test(message)) return NextResponse.json({ error: message }, { status: 400 });
-  return NextResponse.json({ error: `Database unavailable: ${message}` }, { status: 503 });
-}
+import { apiFailure } from "@/lib/api-failure";
+import { requireRequestWorkspace } from "@/lib/workspace-request";
 
 export async function GET(request: NextRequest) {
   try {
     const workspace = await requireRequestWorkspace(request);
     return NextResponse.json(await getFinanceData(workspace.id));
-  } catch (error) { return failure(error); }
+  } catch (error) { return apiFailure(error); }
 }
 
 export async function POST(request: NextRequest) {
@@ -30,7 +21,7 @@ export async function POST(request: NextRequest) {
     else if (resource === "currency") await createCurrency(workspace.id, data);
     else return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
     return NextResponse.json(await getFinanceData(workspace.id), { status: 201 });
-  } catch (error) { return failure(error); }
+  } catch (error) { return apiFailure(error); }
 }
 
 export async function PATCH(request: NextRequest) {
@@ -45,7 +36,7 @@ export async function PATCH(request: NextRequest) {
     else if (resource === "preferences") await savePreferences(workspace.id, data);
     else return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
     return NextResponse.json(await getFinanceData(workspace.id));
-  } catch (error) { return failure(error); }
+  } catch (error) { return apiFailure(error); }
 }
 
 export async function DELETE(request: NextRequest) {
@@ -59,5 +50,5 @@ export async function DELETE(request: NextRequest) {
     else if (resource === "all") await deleteAllData(workspace.id);
     else return NextResponse.json({ error: "Unknown resource" }, { status: 400 });
     return NextResponse.json(await getFinanceData(workspace.id));
-  } catch (error) { return failure(error); }
+  } catch (error) { return apiFailure(error); }
 }

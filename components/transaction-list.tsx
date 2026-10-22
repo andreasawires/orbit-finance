@@ -3,8 +3,8 @@
 import { ArrowDownLeft, ArrowUpRight, Check, MoreHorizontal } from "lucide-react";
 import { Fragment, useRef } from "react";
 import { CurrencyAmounts, type CurrencyDisplayMode } from "@/components/currency-presentation";
-import { groupCurrencyAmounts, type FxRateMap } from "@/lib/currency-summary";
-import { formatMoney, Transaction } from "@/lib/data";
+import type { FxRateMap } from "@/lib/currency-summary";
+import { formatMoney, Transaction, type TransactionPage } from "@/lib/data";
 import { formatDate, utcToZonedDate } from "@/lib/time";
 
 function SelectBox({ checked, indeterminate = false, disabled = false, label, onChange }: { checked: boolean; indeterminate?: boolean; disabled?: boolean; label: string; onChange: (checked: boolean, shiftKey: boolean) => void }) {
@@ -16,11 +16,11 @@ function SelectBox({ checked, indeterminate = false, disabled = false, label, on
   </label>;
 }
 
-export function TransactionList({ items, onSelect, compact = false, groupByDay = false, locale = "en-US", timeZone = "UTC", mainCurrency = "USD", currencyMode = "native", rates, selectedIds, onToggleSelect }: { items: Transaction[]; onSelect?: (item: Transaction) => void; compact?: boolean; groupByDay?: boolean; locale?: string; timeZone?: string; mainCurrency?: string; currencyMode?: CurrencyDisplayMode; rates?: FxRateMap | null; selectedIds?: Set<string>; onToggleSelect?: (ids: string[], selected: boolean) => void }) {
-  // Items arrive newest first, so a new day starts wherever the local calendar date changes.
-  const dayKeys = groupByDay ? items.map((item) => utcToZonedDate(item.occurredAt, timeZone)) : [];
-  const days = new Map<string, Transaction[]>();
-  items.forEach((item, index) => { if (groupByDay) days.set(dayKeys[index], [...(days.get(dayKeys[index]) ?? []), item]); });
+// Passing `dayTotals` groups the rows by local day. The totals come from the server and cover the whole day,
+// even when its transactions continue on the next page.
+export function TransactionList({ items, onSelect, compact = false, dayTotals, locale = "en-US", timeZone = "UTC", mainCurrency = "USD", currencyMode = "native", rates, selectedIds, onToggleSelect }: { items: Transaction[]; onSelect?: (item: Transaction) => void; compact?: boolean; dayTotals?: TransactionPage["dayTotals"]; locale?: string; timeZone?: string; mainCurrency?: string; currencyMode?: CurrencyDisplayMode; rates?: FxRateMap | null; selectedIds?: Set<string>; onToggleSelect?: (ids: string[], selected: boolean) => void }) {
+  // Items arrive sorted by date, so a new day starts wherever the local calendar date changes.
+  const dayKeys = dayTotals ? items.map((item) => utcToZonedDate(item.occurredAt, timeZone)) : [];
   const selectable = !!onToggleSelect;
   const selectableIds = selectable ? items.filter((item) => item.type !== "Transfer").map((item) => item.id) : [];
   const selectedCount = selectableIds.filter((id) => selectedIds?.has(id)).length;
@@ -40,8 +40,7 @@ export function TransactionList({ items, onSelect, compact = false, groupByDay =
         {header}
       </div> : header}
       {items.map((item, index) => {
-        const dayItems = groupByDay && (index === 0 || dayKeys[index - 1] !== dayKeys[index]) ? days.get(dayKeys[index]) ?? [] : [];
-        const dayTotal = groupCurrencyAmounts(dayItems.map((dayItem) => ({ currency: dayItem.currency, amount: dayItem.amount })), mainCurrency);
+        const day = dayTotals && (index === 0 || dayKeys[index - 1] !== dayKeys[index]) ? dayTotals[dayKeys[index]] ?? { count: 0, amounts: [] } : null;
         const row = <button className="transaction-row" onClick={() => onSelect?.(item)}>
           <span className="merchant-cell"><i className={`merchant-icon ${item.type.toLowerCase()}`}>{item.icon}</i><span><strong>{item.merchant}</strong><small>{item.detail}</small></span></span>
           <span className="date-cell">{formatDate(item.occurredAt, timeZone, locale)}</span>
@@ -53,10 +52,10 @@ export function TransactionList({ items, onSelect, compact = false, groupByDay =
         </button>;
         const selected = !!selectedIds?.has(item.id);
         return <Fragment key={item.id}>
-        {dayItems.length > 0 && <div className="transaction-day"><span>
+        {day && <div className="transaction-day"><span>
           <strong>{formatDate(item.occurredAt, timeZone, locale)}</strong>
-          <span>{dayItems.length} transaction{dayItems.length === 1 ? "" : "s"}</span>
-          {dayTotal.length ? <CurrencyAmounts values={dayTotal} locale={locale} mainCurrency={mainCurrency} mode={currencyMode} rates={rates} signed /> : <span>{formatMoney(0, mainCurrency, locale)}</span>}
+          <span>{day.count} transaction{day.count === 1 ? "" : "s"}</span>
+          {day.amounts.length ? <CurrencyAmounts values={day.amounts} locale={locale} mainCurrency={mainCurrency} mode={currencyMode} rates={rates} signed /> : <span>{formatMoney(0, mainCurrency, locale)}</span>}
         </span></div>}
         {selectable ? <div className={`transaction-select-row ${selected ? "selected" : ""}`}>
           <SelectBox label={`Select ${item.merchant}`} checked={selected} disabled={item.type === "Transfer"} onChange={(checked, shiftKey) => toggleRow(item.id, checked, shiftKey)} />

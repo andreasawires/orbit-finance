@@ -1,6 +1,7 @@
 import "server-only";
 import type { PoolClient } from "pg";
 import { lockedAccountCurrency } from "@/lib/account-currency";
+import { groupCurrencyAmounts, type CurrencyAmount } from "@/lib/currency-summary";
 import type { Account, CostCenter, Currency, FinanceData, Preferences, Transaction, Workspace } from "@/lib/data";
 import { db } from "@/lib/database";
 import { IMPORT_STORAGE_ADVISORY_LOCK } from "@/lib/imports/locks";
@@ -43,9 +44,11 @@ const accountFromRow = (row: Row): Account => ({
   currency: String(row.currency),
   color: String(row.color),
   kind: String(row.kind),
+  transactionCount: Number(row.transaction_count ?? 0),
+  transferCount: Number(row.transfer_count ?? 0),
 });
 
-const transactionFromRow = (row: Row): Transaction => {
+export const transactionFromRow = (row: Row): Transaction => {
   const merchant = String(row.description);
   return {
     id: String(row.id),
@@ -61,17 +64,29 @@ const transactionFromRow = (row: Row): Transaction => {
   };
 };
 
-function buildTree(rows: Row[]): CostCenter[] {
+// `spendRows` carry each center's own expenses per currency (cost_center_id, currency, amount); every node's
+// `spend` is rolled up to include its descendants.
+export function buildTree(rows: Row[], spendRows: Row[] = [], mainCurrency = "USD"): CostCenter[] {
   const nodes = new Map<string, CostCenter>();
   for (const row of rows) nodes.set(String(row.id), {
     id: String(row.id), name: String(row.name), parentId: row.parent_id ? String(row.parent_id) : null,
-    color: String(row.color), amount: Number(row.amount ?? 0), children: [],
+    color: String(row.color), spend: [], children: [],
   });
+  const direct = new Map<string, CurrencyAmount[]>();
+  for (const row of spendRows) {
+    const id = String(row.cost_center_id);
+    direct.set(id, [...(direct.get(id) ?? []), { currency: String(row.currency), amount: Number(row.amount) }]);
+  }
   const roots: CostCenter[] = [];
   for (const node of nodes.values()) {
     if (node.parentId && nodes.has(node.parentId)) nodes.get(node.parentId)!.children.push(node);
     else roots.push(node);
   }
+  const rollup = (node: CostCenter): CurrencyAmount[] => {
+    node.spend = groupCurrencyAmounts([...(direct.get(node.id) ?? []), ...node.children.flatMap(rollup)], mainCurrency);
+    return node.spend;
+  };
+  roots.forEach(rollup);
   return roots;
 }
 
@@ -88,21 +103,22 @@ const workspaceFromRow = (row: Row): Workspace => ({
 
 export async function getFinanceData(workspaceId: string): Promise<FinanceData> {
   await ensureDatabaseSchema();
-  const [workspaceResult, accountsResult, transactionsResult, centersResult, currenciesResult, preferencesResult] = await Promise.all([
+  // Transactions are not part of this payload: pages load them filtered and paginated from /api/transactions.
+  const [workspaceResult, accountsResult, centersResult, spendResult, currenciesResult, preferencesResult] = await Promise.all([
     db.query("SELECT * FROM workspaces WHERE id = $1 AND archived_at IS NULL", [workspaceId]),
-    db.query(`SELECT a.*, a.opening_balance + COALESCE(transaction_totals.amount, 0) AS balance
+    db.query(`SELECT a.*, a.opening_balance + COALESCE(transaction_totals.amount, 0) AS balance,
+        COALESCE(transaction_totals.transaction_count, 0) AS transaction_count, COALESCE(transaction_totals.transfer_count, 0) AS transfer_count
       FROM accounts a
       LEFT JOIN (
-        SELECT account_id, SUM(amount) AS amount FROM transactions WHERE workspace_id = $1 GROUP BY account_id
+        SELECT account_id, SUM(amount) AS amount, COUNT(*)::int AS transaction_count, COUNT(transfer_id)::int AS transfer_count
+        FROM transactions WHERE workspace_id = $1 GROUP BY account_id
       ) AS transaction_totals ON transaction_totals.account_id = a.id
       WHERE a.workspace_id = $1 ORDER BY a.created_at, a.name`, [workspaceId]),
-    db.query(`SELECT t.*, a.name AS account_name, a.currency AS transaction_currency, c.name AS cost_center
+    db.query("SELECT * FROM cost_centers WHERE workspace_id = $1 ORDER BY created_at, name", [workspaceId]),
+    db.query(`SELECT t.cost_center_id, a.currency, SUM(ABS(t.amount)) AS amount
       FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.workspace_id = t.workspace_id
-      LEFT JOIN cost_centers c ON c.id = t.cost_center_id AND c.workspace_id = t.workspace_id
-      WHERE t.workspace_id = $1 ORDER BY t.occurred_at DESC, t.created_at DESC`, [workspaceId]),
-    db.query(`SELECT c.*, COALESCE(SUM(CASE WHEN t.type = 'Expense' THEN ABS(t.amount) ELSE 0 END), 0) AS amount
-      FROM cost_centers c LEFT JOIN transactions t ON t.cost_center_id = c.id AND t.workspace_id = c.workspace_id
-      WHERE c.workspace_id = $1 GROUP BY c.id ORDER BY c.created_at, c.name`, [workspaceId]),
+      WHERE t.workspace_id = $1 AND t.type = 'Expense' AND t.cost_center_id IS NOT NULL
+      GROUP BY t.cost_center_id, a.currency`, [workspaceId]),
     db.query("SELECT code, name, symbol FROM currencies WHERE workspace_id = $1 ORDER BY code", [workspaceId]),
     db.query("SELECT currency, timezone, locale, price_format FROM workspace_preferences WHERE workspace_id = $1", [workspaceId]),
   ]);
@@ -111,8 +127,7 @@ export async function getFinanceData(workspaceId: string): Promise<FinanceData> 
   return {
     workspace: workspaceFromRow(workspaceResult.rows[0]),
     accounts: accountsResult.rows.map(accountFromRow),
-    transactions: transactionsResult.rows.map(transactionFromRow),
-    costCenters: buildTree(centersResult.rows),
+    costCenters: buildTree(centersResult.rows, spendResult.rows, String(pref.currency ?? "USD")),
     currencies: currenciesResult.rows.map(currencyFromRow),
     preferences: {
       currency: String(pref.currency ?? "USD"), timezone: String(pref.timezone ?? "UTC"),

@@ -676,3 +676,41 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 :root[data-theme="dark"] .batch-row input,
 :root[data-theme="dark"] .batch-row select { background: var(--paper); color: var(--ink); }
 :root[data-theme="dark"] .batch-remove:hover { background: #302e38; }
+
+/* Date range filter: a preset list plus a custom from/to pair, shown in each page heading. */
+.date-range-filter { position: relative; flex: 0 0 auto; }
+.date-range-trigger { min-height: 42px; height: auto; font: inherit; text-align: left; cursor: pointer; }
+.date-range-trigger:focus-visible { outline: none; border-color: var(--purple); box-shadow: 0 0 0 3px rgba(87,60,240,.1); }
+.date-range-trigger > span { display: flex; flex-direction: column; line-height: 1.2; }
+.date-range-trigger strong { color: var(--ink); font-size: 13px; font-weight: 650; }
+.date-range-trigger small { color: var(--muted); font-size: 11px; }
+.date-range-menu { top: calc(100% + 6px); right: 0; width: 280px; padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.date-range-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
+.date-range-option { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.date-range-option:hover { background: var(--wash); }
+.date-range-option.active { background: var(--purple-pale); color: var(--purple); font-weight: 650; }
+.date-range-custom { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 8px 6px; border-top: 1px solid var(--line); }
+.date-range-custom > strong { grid-column: 1 / -1; font-size: 12px; color: var(--muted); font-weight: 650; }
+.date-range-custom label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.date-range-custom input { min-height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; background: white; color: var(--ink); font: inherit; font-size: 13px; }
+.date-range-custom .button { grid-column: 1 / -1; height: 36px; }
+:root[data-theme="dark"] .date-range-option:hover { background: #35323f; }
+:root[data-theme="dark"] .date-range-custom input { background: var(--paper); }
+@media (max-width: 760px) {
+  .heading-actions { flex-wrap: wrap; }
+  .heading-actions .date-range-filter { flex: 1 1 100%; }
+  .date-range-trigger { width: 100%; }
+  .date-range-trigger > span { flex: 1; }
+  .date-range-menu { left: 0; right: auto; width: min(280px, calc(100vw - 28px)); }
+}
+
+/* Server-side pagination under the ledger and the overview list. */
+.pagination { gap: 12px; font-size: 13px; }
+.pagination > div { gap: 6px; }
+.pagination-page { min-width: 92px; text-align: center; }
+.pagination .pagination-size { height: 30px; gap: 5px; padding: 0 8px; font-size: 12px; margin-right: 6px; }
+.transactions-panel .pagination { border-top: 1px solid var(--line); }
+.table-summary-status { margin-left: auto; }
+@media (max-width: 540px) {
+  .pagination { flex-wrap: wrap; justify-content: center; }
+}

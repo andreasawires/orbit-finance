@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Account, CostCenter, Currency, Transaction } from "@/lib/data";
 import { flattenCostCenters, formatMoney } from "@/lib/data";
 import { formatDate, isIsoDate, todayInZone, utcToZonedDate, zonedDateToUtc } from "@/lib/time";
+import { useServerQuery } from "@/lib/use-server-query";
 
 export function Modal({ open, onClose, title, subtitle, children, action = "Save changes", onSubmit, footerStart, danger = false, submitDisabled = false, savingLabel = "Saving…", wide = false }: {
   open: boolean; onClose: () => void; title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode; onSubmit?: (data: FormData) => Promise<unknown> | unknown;
@@ -49,7 +50,7 @@ export function AccountForm({ account, currencies = [] }: { account?: Account | 
   </div>;
 }
 
-export function TransactionForm({ accounts, costCenters, currencies, transactions = [], transaction, locale = "en-US", timeZone = "UTC", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transactions?: Transaction[]; transaction?: Transaction | null; locale?: string; timeZone?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
+export function TransactionForm({ accounts, costCenters, currencies, transaction, locale = "en-US", timeZone = "UTC", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transaction?: Transaction | null; locale?: string; timeZone?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
   const [type, setType] = useState<Transaction["type"]>(transaction?.type ?? "Expense");
   const initialSourceAccountId = transaction?.type === "Transfer" && transaction.amount > 0 ? transaction.transferAccountId ?? "" : transaction?.accountId ?? accounts[0]?.id ?? "";
   const initialDestinationAccountId = transaction?.type === "Transfer" && transaction.amount < 0 ? transaction.transferAccountId ?? "" : transaction?.type === "Transfer" ? transaction?.accountId ?? "" : accounts.find((account) => account.id !== initialSourceAccountId)?.id ?? "";
@@ -70,11 +71,11 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
   const originalDate = transaction ? utcToZonedDate(transaction.occurredAt, timeZone) : "";
   const [occurredOn, setOccurredOn] = useState(() => originalDate || todayInZone(timeZone));
   const occurredAt = transaction && occurredOn === originalDate ? transaction.occurredAt : isIsoDate(occurredOn) ? zonedDateToUtc(occurredOn, timeZone) : "";
-  const candidates = isReconciliation ? transactions.filter((item) =>
-    item.id !== transaction?.id && item.accountId === otherAccountId && !item.transferId &&
-    ((transaction.amount < 0 && item.type === "Income" && item.amount > 0) || (transaction.amount > 0 && item.type === "Expense" && item.amount < 0)) &&
-    Math.abs(item.amount) === Math.abs(transaction.amount)
-  ) : [];
+  // The server finds unlinked transactions on the other account with the same amount in the opposite direction.
+  const candidateQuery = useServerQuery<{ items: Transaction[] }>("/api/transactions/candidates",
+    isReconciliation && otherAccountId ? new URLSearchParams({ transactionId: transaction.id, accountId: otherAccountId }) : null);
+  // Never offer the previous account's matches while the new ones load.
+  const candidates = candidateQuery.loading ? [] : candidateQuery.data?.items ?? [];
   return <div className="form-grid">
     <input type="hidden" name="type" value={type} />
     <div className="full segmented-input">{(["Expense", "Income", "Transfer"] as const).map((value) => <button type="button" className={type === value ? "active" : ""} key={value} onClick={() => { setType(value); onTransferLinkModeChange?.(value === "Transfer" && canReconcile); }}>{value}</button>)}</div>
@@ -82,7 +83,7 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
       <input type="hidden" name="linkExistingTransfer" value="true" />
       <div className="full form-hint"><strong>{transaction.type === "Expense" ? "Money left" : "Money arrived"} via {transaction.account}</strong><span>{formatMoney(transaction.amount, transactionCurrency, locale)} · {formatDate(transaction.occurredAt, timeZone, locale)}</span></div>
       {linkedAccounts.length ? <label className="full">Other account<select value={otherAccountId} onChange={(event) => setOtherAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{linkedAccounts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label> : <div className="full form-hint"><strong>No other {transactionCurrency} accounts</strong><span>Transfers can only link accounts with the same currency. Add another {transactionCurrency} account to link this one.</span></div>}
-      {otherAccountId && (candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{formatDate(item.occurredAt, timeZone, locale)} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
+      {otherAccountId && (candidateQuery.loading ? <div className="full form-hint"><span>Looking for matching transactions…</span></div> : candidates.length ? <label className="full">Matching transaction<select name="counterpartTransactionId" defaultValue="" required><option value="" disabled>Select the matching transaction</option>{candidates.map((item) => <option value={item.id} key={item.id}>{formatDate(item.occurredAt, timeZone, locale)} · {item.merchant} · {formatMoney(item.amount, item.currency, locale)}</option>)}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
     </> : <>
       <label className="full">Description<input name="description" defaultValue={transaction?.merchant} placeholder="What was this for?" required /></label>
       <label><span className="amount-label">Amount<small>{currencyLabel}</small></span><input name="amount" defaultValue={transaction ? Math.abs(transaction.amount) : undefined} type="number" min="0" step="0.01" placeholder="0.00" required /></label>

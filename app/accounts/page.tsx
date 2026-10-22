@@ -12,16 +12,12 @@ import { useFinanceData } from "@/lib/use-finance-data";
 const values = (form: FormData) => Object.fromEntries(form.entries());
 
 export default function AccountsPage() {
-  const { accounts, transactions, currencies, preferences, loading, error, mutate } = useFinanceData();
+  const { accounts, currencies, preferences, loading, error, mutate } = useFinanceData();
   const [modal, setModal] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Account | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
-  const deleteImpact = useMemo(() => {
-    if (!deleting) return { own: 0, transfers: 0 };
-    const own = transactions.filter((transaction) => transaction.accountId === deleting.id);
-    return { own: own.length, transfers: own.filter((transaction) => transaction.transferId).length };
-  }, [deleting, transactions]);
+  const deleteImpact = { own: deleting?.transactionCount ?? 0, transfers: deleting?.transferCount ?? 0 };
   const filtered = accounts.filter((a) => `${a.name} ${a.institution}`.toLowerCase().includes(query.toLowerCase()));
   const summary = useMemo(() => ({
     net: groupCurrencyAmounts(accounts.map((account) => ({ currency: account.currency, amount: account.balance })), preferences.currency),

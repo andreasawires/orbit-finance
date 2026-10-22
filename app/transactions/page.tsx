@@ -1,117 +1,119 @@
 "use client";
 
-import { Check, ChevronDown, Download, FolderTree, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDownUp, ChevronDown, Download, FolderTree, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
+import { DateRangeFilter } from "@/components/date-range-filter";
 import { BatchTransactionForm, Modal, TransactionForm } from "@/components/modal";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
+import { Pagination } from "@/components/pagination";
 import { TransactionList } from "@/components/transaction-list";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
-import { transactionFlows } from "@/lib/currency-summary";
-import { flattenCostCenters, formatMoney, type Transaction } from "@/lib/data";
-import { formatDate, utcToZonedDate } from "@/lib/time";
+import { usePageFilters } from "@/components/view-state-provider";
+import { useWorkspace } from "@/components/workspace-provider";
+import { flattenCostCenters, formatMoney, type Transaction, type TransactionPage } from "@/lib/data";
+import { formatDate } from "@/lib/time";
+import { DEFAULT_TRANSACTION_QUERY, PAGE_SIZES, TRANSACTION_TYPES, UNCATEGORIZED, transactionFilterSearchParams, transactionSearchParams, type SortDirection, type TransactionFilters, type TransactionSort } from "@/lib/transaction-query";
 import { useFinanceData } from "@/lib/use-finance-data";
+import { useServerQuery } from "@/lib/use-server-query";
 
-const types = ["All types", "Income", "Expense", "Transfer"];
 const values = (form: FormData) => Object.fromEntries(form.entries());
+const sorts: Array<{ value: `${TransactionSort}:${SortDirection}`; label: string }> = [
+  { value: "date:desc", label: "Newest first" },
+  { value: "date:asc", label: "Oldest first" },
+  { value: "amount:desc", label: "Amount: high to low" },
+  { value: "amount:asc", label: "Amount: low to high" },
+  { value: "description:asc", label: "Description: A to Z" },
+  { value: "description:desc", label: "Description: Z to A" },
+];
 
 export default function TransactionsPage() {
-  const { accounts, transactions, costCenters, currencies, preferences, loading, error, mutate } = useFinanceData();
-  const [query, setQuery] = useState("");
-  const [type, setType] = useState("All types");
-  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
-  const [accountFilterOpen, setAccountFilterOpen] = useState(false);
+  const { accounts, costCenters, currencies, preferences, loading, error, mutate } = useFinanceData();
+  const { workspaceFetch } = useWorkspace();
+  const [query, updateQuery] = usePageFilters("transactions", DEFAULT_TRANSACTION_QUERY);
+  const [search, setSearch] = useState(query.q);
   const [modal, setModal] = useState(false);
   const [newCount, setNewCount] = useState(1);
   const [selected, setSelected] = useState<Transaction | null>(null);
   const [linkMode, setLinkMode] = useState(false);
   const [deleting, setDeleting] = useState<Transaction | null>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkModal, setBulkModal] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
   const deletingCounterpart = deleting?.transferAccountId ? accounts.find((account) => account.id === deleting.transferAccountId)?.name ?? "another account" : "";
-  const accountFilterRef = useRef<HTMLDivElement>(null);
 
+  // Search is sent to the server once typing pauses.
   useEffect(() => {
-    if (!accountFilterOpen) return;
-    const closeWhenClickingAway = (event: PointerEvent) => {
-      if (!accountFilterRef.current?.contains(event.target as Node)) setAccountFilterOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAccountFilterOpen(false);
-    };
-    document.addEventListener("pointerdown", closeWhenClickingAway);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeWhenClickingAway);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [accountFilterOpen]);
+    if (search.trim() === query.q) return;
+    const timer = window.setTimeout(() => updateQuery({ q: search.trim() }), 300);
+    return () => window.clearTimeout(timer);
+  }, [query.q, search, updateQuery]);
 
-  const filtered = useMemo(() => transactions.filter((t) => {
-    const matchesQuery = `${t.merchant} ${t.detail} ${t.costCenter}`.toLowerCase().includes(query.toLowerCase());
-    return matchesQuery && (type === "All types" || t.type === type) && (!selectedAccountIds.length || selectedAccountIds.includes(t.accountId));
-  }), [transactions, query, type, selectedAccountIds]);
-  const activeFilters = useMemo(() => [
-    ...(type !== "All types" ? [{ id: "type", label: type, kind: "type" as const }] : []),
-    ...selectedAccountIds.map((accountId) => ({ id: accountId, label: accounts.find((account) => account.id === accountId)?.name ?? "Account", kind: "account" as const })),
-  ], [accounts, selectedAccountIds, type]);
-  const accountFilterLabel = selectedAccountIds.length === 0 ? "All accounts" : selectedAccountIds.length === 1 ? accounts.find((account) => account.id === selectedAccountIds[0])?.name ?? "1 account" : `${selectedAccountIds.length} accounts`;
-  const flows = useMemo(() => transactionFlows(filtered, preferences.currency), [filtered, preferences.currency]);
-  const presentationValues = useMemo(() => [...flows.inflow, ...flows.outflow], [flows]);
-  const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
-  // Only rows still visible under the current filters count, so a hidden selection is never updated by accident.
-  const bulkIds = useMemo(() => filtered.filter((t) => t.type !== "Transfer" && selectedIds.has(t.id)).map((t) => t.id), [filtered, selectedIds]);
+  const params = transactionSearchParams(query);
+  const listKey = params.toString();
+  const { data: result, loading: listLoading, error: listError } = useServerQuery<TransactionPage>("/api/transactions", params);
+  const items = useMemo(() => result?.items ?? [], [result]);
+  // Selection belongs to the exact query it was made under, so changing filters or pages starts with nothing selected.
+  const [selection, setSelection] = useState<{ key: string; ids: Set<string> }>({ key: "", ids: new Set() });
+  const selectedIds = useMemo(() => selection.key === listKey ? selection.ids : new Set<string>(), [listKey, selection]);
+  const bulkIds = useMemo(() => items.filter((t) => t.type !== "Transfer" && selectedIds.has(t.id)).map((t) => t.id), [items, selectedIds]);
   const centers = useMemo(() => flattenCostCenters(costCenters), [costCenters]);
-
-  function toggleAccount(accountId: string) {
-    setSelectedAccountIds((current) => current.includes(accountId) ? current.filter((id) => id !== accountId) : [...current, accountId]);
-  }
+  const centerOptions = useMemo(() => [{ id: UNCATEGORIZED, label: "Uncategorized" }, ...centers.map((center) => ({ id: center.id, label: center.path }))], [centers]);
+  const accountOptions = useMemo(() => accounts.map((account) => ({ id: account.id, label: account.name })), [accounts]);
+  const activeFilters = useMemo(() => [
+    ...(query.type ? [{ id: "type", label: query.type, kind: "type" as const }] : []),
+    ...query.accountIds.map((accountId) => ({ id: accountId, label: accounts.find((account) => account.id === accountId)?.name ?? "Account", kind: "account" as const })),
+    ...query.costCenterIds.map((centerId) => ({ id: centerId, label: centerOptions.find((center) => center.id === centerId)?.label ?? "Cost center", kind: "costCenter" as const })),
+  ], [accounts, centerOptions, query.accountIds, query.costCenterIds, query.type]);
+  const presentationValues = useMemo(() => [...(result?.summary.inflow ?? []), ...(result?.summary.outflow ?? [])], [result]);
+  const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
 
   function toggleSelected(ids: string[], checked: boolean) {
-    setSelectedIds((current) => {
-      const next = new Set(current);
+    setSelection(() => {
+      const next = new Set(selectedIds);
       ids.forEach((id) => { if (checked) next.add(id); else next.delete(id); });
-      return next;
+      return { key: listKey, ids: next };
     });
   }
 
-  function exportCsv() {
-    const csv = [["Date", "Description", "Note", "Type", "Account", "Cost center", "Amount", "Currency"], ...filtered.map((t) => [utcToZonedDate(t.occurredAt, preferences.timezone), t.merchant, t.detail, t.type, t.account, t.costCenter, String(t.amount), t.currency])]
-      .map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(",")).join("\n");
-    const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); link.download = "orbit-transactions.csv"; link.click(); URL.revokeObjectURL(link.href);
+  function removeFilter(filter: (typeof activeFilters)[number]) {
+    if (filter.kind === "type") updateQuery({ type: "" });
+    else if (filter.kind === "account") updateQuery({ accountIds: query.accountIds.filter((id) => id !== filter.id) });
+    else updateQuery({ costCenterIds: query.costCenterIds.filter((id) => id !== filter.id) });
+  }
+
+  async function exportCsv() {
+    setExporting(true); setExportError("");
+    try {
+      const response = await workspaceFetch(`/api/transactions/export?${transactionFilterSearchParams(query)}&sort=${query.sort}&dir=${query.dir}`, { cache: "no-store" });
+      if (!response.ok) throw new Error((await response.json()).error || "Could not export transactions");
+      const link = document.createElement("a"); link.href = URL.createObjectURL(await response.blob()); link.download = "orbit-transactions.csv"; link.click(); URL.revokeObjectURL(link.href);
+    } catch (caught) { setExportError(caught instanceof Error ? caught.message : "Could not export transactions"); }
+    finally { setExporting(false); }
   }
 
   return <div className="page transactions-page">
-    <div className="page-heading"><div><div className="eyebrow">Activity ledger</div><h1>Transactions</h1><p>Search and manage saved movements.</p></div><div className="heading-actions"><button className="button secondary" disabled={!filtered.length} onClick={exportCsv}><Download size={16} /> Export</button><button className="button primary" disabled={!accounts.length} onClick={() => { setNewCount(1); setModal(true); }}><Plus size={17} /> New transaction</button></div></div>
+    <div className="page-heading"><div><div className="eyebrow">Activity ledger</div><h1>Transactions</h1><p>Search and manage saved movements.</p></div><div className="heading-actions"><DateRangeFilter value={query.range} onChange={(range) => updateQuery({ range })} timeZone={preferences.timezone} locale={preferences.locale} /><button className="button secondary" disabled={!result?.total || exporting} onClick={() => void exportCsv()}><Download size={16} /> {exporting ? "Exporting…" : "Export"}</button><button className="button primary" disabled={!accounts.length} onClick={() => { setNewCount(1); setModal(true); }}><Plus size={17} /> New transaction</button></div></div>
     {error && <div className="data-error"><strong>Could not connect to PostgreSQL.</strong><span>{error}</span><code>docker compose up -d</code></div>}
     <section className="panel transaction-workspace">
       <div className="transaction-toolbar">
-        <div className="transaction-search"><Search size={17} /><input placeholder="Search by description, note, or cost center..." value={query} onChange={(e) => setQuery(e.target.value)} />{query && <button onClick={() => setQuery("")}><X size={14} /></button>}</div>
-        <label className="filter-select"><SlidersHorizontal size={16} /><select value={type} onChange={(e) => setType(e.target.value)}>{types.map((item) => <option key={item}>{item}</option>)}</select><ChevronDown size={14} /></label>
-        <div className="account-filter" ref={accountFilterRef}>
-          <button className="filter-select account-filter-trigger" type="button" aria-haspopup="dialog" aria-expanded={accountFilterOpen} onClick={() => setAccountFilterOpen((open) => !open)}><span>{accountFilterLabel}</span><ChevronDown size={14} /></button>
-          {accountFilterOpen && <div className="account-filter-menu popover" role="group" aria-label="Filter by account">
-            <label className="account-filter-option">
-              <input type="checkbox" checked={selectedAccountIds.length === 0} onChange={() => setSelectedAccountIds([])} />
-              <span className="account-filter-check"><Check size={13} /></span>
-              <span>All accounts</span>
-            </label>
-            {accounts.map((item) => <label className="account-filter-option" key={item.id}>
-              <input type="checkbox" checked={selectedAccountIds.includes(item.id)} onChange={() => toggleAccount(item.id)} />
-              <span className="account-filter-check"><Check size={13} /></span>
-              <span>{item.name}</span>
-            </label>)}
-          </div>}
-        </div>
+        <div className="transaction-search"><Search size={17} /><input placeholder="Search by description, note, or cost center..." value={search} onChange={(e) => setSearch(e.target.value)} />{search && <button onClick={() => { setSearch(""); updateQuery({ q: "" }); }}><X size={14} /></button>}</div>
+        <label className="filter-select"><SlidersHorizontal size={16} /><select value={query.type} onChange={(e) => updateQuery({ type: e.target.value as TransactionFilters["type"] })}><option value="">All types</option>{TRANSACTION_TYPES.map((item) => <option key={item}>{item}</option>)}</select><ChevronDown size={14} /></label>
+        <MultiSelectFilter allLabel="All accounts" pluralLabel="accounts" ariaLabel="Filter by account" options={accountOptions} selected={query.accountIds} onChange={(accountIds) => updateQuery({ accountIds })} />
+        <MultiSelectFilter allLabel="All cost centers" pluralLabel="cost centers" ariaLabel="Filter by cost center" options={centerOptions} selected={query.costCenterIds} onChange={(costCenterIds) => updateQuery({ costCenterIds })} />
+        <label className="filter-select"><ArrowDownUp size={16} /><select aria-label="Sort transactions" value={`${query.sort}:${query.dir}`} onChange={(e) => { const [sort, dir] = e.target.value.split(":") as [TransactionSort, SortDirection]; updateQuery({ sort, dir }); }}>{sorts.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><ChevronDown size={14} /></label>
       </div>
       {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
-      {activeFilters.length > 0 && <div className="active-filters"><span>Active filters</span>{activeFilters.map((filter) => <button key={`${filter.kind}-${filter.id}`} onClick={() => { if (filter.kind === "type") setType("All types"); else setSelectedAccountIds((current) => current.filter((accountId) => accountId !== filter.id)); }}>{filter.label}<X size={12} /></button>)}<button className="clear-filters" onClick={() => { setType("All types"); setSelectedAccountIds([]); }}>Clear all</button></div>}
-      <div className="table-summary"><span><strong>{filtered.length}</strong> transactions</span><span>Total outflow <strong className="negative"><CurrencyAmounts values={flows.outflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></span><span>Total inflow <strong className="positive"><CurrencyAmounts values={flows.inflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></span></div>
-      {bulkIds.length > 0 && <div className="bulk-bar"><span><strong>{bulkIds.length}</strong> selected</span><button className="button primary" onClick={() => setBulkModal(true)}><FolderTree size={15} /> Assign cost center</button><button className="button secondary" onClick={() => setSelectedIds(new Set())}><X size={14} /> Clear</button></div>}
-      <div className="transaction-scroll">{filtered.length ? <TransactionList items={filtered} groupByDay locale={preferences.locale} timeZone={preferences.timezone} mainCurrency={preferences.currency} currencyMode={currencyPresentation.mode} rates={currencyPresentation.rates} onSelect={setSelected} selectedIds={selectedIds} onToggleSelect={toggleSelected} /> : <div className="empty-state"><Search size={26} /><strong>{loading ? "Loading…" : "No transactions found"}</strong><span>{accounts.length ? "Change your filters or add a transaction." : "Add an account before recording a transaction."}</span></div>}</div>
+      {activeFilters.length > 0 && <div className="active-filters"><span>Active filters</span>{activeFilters.map((filter) => <button key={`${filter.kind}-${filter.id}`} onClick={() => removeFilter(filter)}>{filter.label}<X size={12} /></button>)}<button className="clear-filters" onClick={() => updateQuery({ type: "", accountIds: [], costCenterIds: [] })}>Clear all</button></div>}
+      <div className="table-summary"><span><strong>{result?.total ?? 0}</strong> transactions</span><span>Total outflow <strong className="negative"><CurrencyAmounts values={result?.summary.outflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></span><span>Total inflow <strong className="positive"><CurrencyAmounts values={result?.summary.inflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></span>{listLoading && result && <span className="table-summary-status">Updating…</span>}</div>
+      {(listError || exportError) && <div className="form-error">{listError || exportError}</div>}
+      {bulkIds.length > 0 && <div className="bulk-bar"><span><strong>{bulkIds.length}</strong> selected</span><button className="button primary" onClick={() => setBulkModal(true)}><FolderTree size={15} /> Assign cost center</button><button className="button secondary" onClick={() => setSelection({ key: "", ids: new Set() })}><X size={14} /> Clear</button></div>}
+      <div className="transaction-scroll">{items.length ? <TransactionList items={items} dayTotals={result?.dayTotals} locale={preferences.locale} timeZone={preferences.timezone} mainCurrency={preferences.currency} currencyMode={currencyPresentation.mode} rates={currencyPresentation.rates} onSelect={setSelected} selectedIds={selectedIds} onToggleSelect={toggleSelected} /> : <div className="empty-state"><Search size={26} /><strong>{loading || (listLoading && !result) ? "Loading…" : "No transactions found"}</strong><span>{accounts.length ? "Change your filters or date range, or add a transaction." : "Add an account before recording a transaction."}</span></div>}</div>
+      {result && result.total > 0 && <Pagination page={result.page} pageCount={result.pageCount} pageSize={result.pageSize} total={result.total} pageSizes={PAGE_SIZES} onPageChange={(page) => updateQuery({ page })} onPageSizeChange={(pageSize) => updateQuery({ pageSize })} />}
     </section>
-    <Modal open={!!selected} onClose={() => { setSelected(null); setLinkMode(false); }} footerStart={<button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); setLinkMode(false); }}><Trash2 size={15} /> Delete</button>} title="Edit transaction" action={linkMode ? "Link as transfer" : "Save changes"} onSubmit={(form) => { const data = values(form); return mutate("PATCH", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transactions={transactions} transaction={selected} locale={preferences.locale} timeZone={preferences.timezone} onTransferLinkModeChange={setLinkMode} /></Modal>
+    <Modal open={!!selected} onClose={() => { setSelected(null); setLinkMode(false); }} footerStart={<button type="button" className="button danger" onClick={() => { setDeleting(selected); setSelected(null); setLinkMode(false); }}><Trash2 size={15} /> Delete</button>} title="Edit transaction" action={linkMode ? "Link as transfer" : "Save changes"} onSubmit={(form) => { const data = values(form); return mutate("PATCH", data.linkExistingTransfer ? { resource: "transactionTransferLink", id: selected?.id, data } : { resource: "transaction", id: selected?.id, data }); }}><TransactionForm accounts={accounts} costCenters={costCenters} currencies={currencies} transaction={selected} locale={preferences.locale} timeZone={preferences.timezone} onTransferLinkModeChange={setLinkMode} /></Modal>
     <Modal wide open={modal} onClose={() => setModal(false)} title="New transactions" subtitle="One line per transaction. Use + to add more." action={newCount === 1 ? "Add transaction" : `Add ${newCount} transactions`} onSubmit={(form) => mutate("POST", { resource: "transactions", data: { items: JSON.parse(String(form.get("batch"))) } })}><BatchTransactionForm accounts={accounts} costCenters={costCenters} timeZone={preferences.timezone} onCountChange={setNewCount} /></Modal>
-    <Modal open={bulkModal} onClose={() => setBulkModal(false)} title="Assign cost center" subtitle={`Apply to ${bulkIds.length} transaction${bulkIds.length === 1 ? "" : "s"}.`} action="Assign" submitDisabled={!bulkIds.length} onSubmit={async (form) => { await mutate("PATCH", { resource: "transactionCostCenter", data: { ids: bulkIds, costCenterId: form.get("costCenterId") || null } }); setSelectedIds(new Set()); }}><div className="form-grid"><label className="full">Cost center<select name="costCenterId" defaultValue="" autoFocus><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select></label></div></Modal>
+    <Modal open={bulkModal} onClose={() => setBulkModal(false)} title="Assign cost center" subtitle={`Apply to ${bulkIds.length} transaction${bulkIds.length === 1 ? "" : "s"}.`} action="Assign" submitDisabled={!bulkIds.length} onSubmit={async (form) => { await mutate("PATCH", { resource: "transactionCostCenter", data: { ids: bulkIds, costCenterId: form.get("costCenterId") || null } }); setSelection({ key: "", ids: new Set() }); }}><div className="form-grid"><label className="full">Cost center<select name="costCenterId" defaultValue="" autoFocus><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select></label></div></Modal>
     <ConfirmDeleteDialog open={!!deleting} onClose={() => setDeleting(null)} title="Delete transaction?" confirmText={deleting?.merchant ?? ""}
       impact={deleting?.transferId
         ? <><strong>This transfer will be permanently deleted.</strong><span>Both sides are removed: {deleting.amount < 0 ? `${deleting.account} → ${deletingCounterpart}` : `${deletingCounterpart} → ${deleting.account}`}.</span></>

@@ -1,3 +1,7 @@
+import type { CurrencyAmount } from "@/lib/currency-summary";
+import type { DateRange } from "@/lib/date-range";
+import type { ReportBucketUnit } from "@/lib/transaction-query";
+
 export type Account = {
   id: string;
   name: string;
@@ -8,6 +12,8 @@ export type Account = {
   currency: string;
   color: string;
   kind: string;
+  transactionCount: number;
+  transferCount: number;
 };
 
 export type Transaction = {
@@ -33,7 +39,8 @@ export type CostCenter = {
   name: string;
   parentId: string | null;
   color: string;
-  amount: number;
+  /** All-time expenses per currency, including every descendant center. */
+  spend: CurrencyAmount[];
   children: CostCenter[];
 };
 
@@ -61,7 +68,6 @@ export type Workspace = {
 export type FinanceData = {
   workspace: Workspace | null;
   accounts: Account[];
-  transactions: Transaction[];
   costCenters: CostCenter[];
   currencies: Currency[];
   preferences: Preferences;
@@ -70,10 +76,43 @@ export type FinanceData = {
 export const emptyFinanceData: FinanceData = {
   workspace: null,
   accounts: [],
-  transactions: [],
   costCenters: [],
   currencies: [],
   preferences: { currency: "USD", timezone: "UTC", locale: "en-US", priceFormat: "symbol" },
+};
+
+/** One page of the filtered ledger. `summary` covers every matching transaction, not just this page. */
+export type TransactionPage = {
+  items: Transaction[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  range: DateRange;
+  summary: { inflow: CurrencyAmount[]; outflow: CurrencyAmount[] };
+  /** Full-day totals for each local day on this page, keyed YYYY-MM-DD. Only present when sorted by date. */
+  dayTotals: Record<string, { count: number; amounts: CurrencyAmount[] }> | null;
+};
+
+export type ReportCurrencyView = {
+  currency: string;
+  income: number;
+  expense: number;
+  net: number;
+  rate: number;
+  expenseCount: number;
+  /** Aligned with FinanceReport.buckets. */
+  buckets: Array<{ income: number; expense: number }>;
+  /** Root cost centers with their rolled-up expenses in this currency. */
+  costCenters: Array<{ id: string; name: string; color: string; total: number }>;
+};
+
+export type FinanceReport = {
+  range: DateRange;
+  granularity: ReportBucketUnit;
+  /** Start date of each bucket, YYYY-MM-DD. */
+  buckets: string[];
+  currencies: ReportCurrencyView[];
 };
 
 export const formatMoney = (value: number, currency = "USD", locale = "en-US") =>
@@ -84,6 +123,3 @@ export const flattenCostCenters = (centers: CostCenter[], prefix = ""): Array<Co
     const path = prefix ? `${prefix} › ${center.name}` : center.name;
     return [{ ...center, path }, ...flattenCostCenters(center.children, path)];
   });
-
-export const costCenterTotal = (center: CostCenter): number =>
-  center.amount + center.children.reduce((total, child) => total + costCenterTotal(child), 0);
