@@ -377,44 +377,93 @@ async function extractPdf(request: ExtractRequest, onStage?: (stage: ExtractStag
     });
   };
 
-  for (let pageIndex = 0; pageIndex < extracted.pages.length;) {
-    request.signal?.throwIfAborted();
-    const page = extracted.pages[pageIndex]!;
+  type PageJob = { pageNumbers: number[]; run: (signal: AbortSignal) => Promise<Awaited<ReturnType<typeof convertWithModel>>> };
+  const visualJob = (page: (typeof extracted.pages)[number]): PageJob => {
     const pageNumber = page.page + 1;
+    return {
+      pageNumbers: [pageNumber],
+      run: (signal) => {
+        console.log(`[import] PDF page ${pageNumber}: rendering for visual conversion`);
+        return withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
+          accountCurrency: request.accountCurrency,
+          sourceLabel: `PDF page ${pageNumber} (visual source)`,
+          content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
+          statementContext: pageNumber > 1 ? statementContext : undefined,
+          imagePath,
+          signal,
+        }), signal);
+      },
+    };
+  };
+  const nativeJob = (pages: typeof extracted.pages): PageJob => {
+    const pageNumbers = pages.map((nativePage) => nativePage.page + 1);
+    const label = pageNumbers.length > 1 ? `PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)}` : `PDF page ${pageNumbers[0]}`;
+    return {
+      pageNumbers,
+      run: (signal) => {
+        console.log(`[import] ${label}: converting native text`);
+        return convertWithModel({
+          accountCurrency: request.accountCurrency,
+          sourceLabel: `${label} (native text)`,
+          // Batches hold whole pages so every request keeps its [PDF page N]
+          // labels; convertWithModel still splits a single oversized page.
+          content: pages.map((nativePage) => `[PDF page ${nativePage.page + 1}]\n${nativePage.markdown}`).join("\n\n"),
+          requireSourcePage: true,
+          signal,
+        });
+      },
+    };
+  };
+
+  const jobs: PageJob[] = [];
+  let batch = [] as typeof extracted.pages;
+  let batchChars = 0;
+  for (const page of extracted.pages) {
     if (page.needsOcr) {
-      console.log(`[import] PDF page ${pageNumber}: rendering for visual conversion`);
-      const result = await withRenderedPdfPage(pdfPath, pageNumber, (imagePath) => convertWithModel({
-        accountCurrency: request.accountCurrency,
-        sourceLabel: `PDF page ${pageNumber} (visual source)`,
-        content: page.markdown ? `Unreliable native text, for context only:\n${page.markdown}` : "Read the transaction table from this page image.",
-        statementContext: pageNumber > 1 ? statementContext : undefined,
-        imagePath,
-        signal: request.signal,
-      }), request.signal);
-      if (pageNumber === 1 && !statementContext) statementContext = contextFromFirstPageCandidates(result.transactions);
-      addResult(result, [pageNumber]);
-      pageIndex += 1;
+      if (batch.length) jobs.push(nativeJob(batch));
+      batch = [];
+      batchChars = 0;
+      jobs.push(visualJob(page));
       continue;
     }
-
-    const nativePages = [] as typeof extracted.pages;
-    while (pageIndex < extracted.pages.length && !extracted.pages[pageIndex]!.needsOcr) {
-      nativePages.push(extracted.pages[pageIndex]!);
-      pageIndex += 1;
+    const pageChars = (page.markdown?.length ?? 0) + 20;
+    if (batch.length && batchChars + pageChars > importConfig.modelBatchChars) {
+      jobs.push(nativeJob(batch));
+      batch = [];
+      batchChars = 0;
     }
-    const pageNumbers = nativePages.map((nativePage) => nativePage.page + 1);
-    console.log(`[import] PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)}: converting native text`);
-    const result = await convertWithModel({
-      accountCurrency: request.accountCurrency,
-      sourceLabel: `PDF pages ${pageNumbers[0]}-${pageNumbers.at(-1)} (native text)`,
-      // convertWithModel enforces MODEL_MAX_INPUT_CHARS and only splits this
-      // combined source when the configured limit is exceeded.
-      content: nativePages.map((nativePage) => `[PDF page ${nativePage.page + 1}]\n${nativePage.markdown}`).join("\n\n"),
-      requireSourcePage: true,
-      signal: request.signal,
-    });
-    addResult(result, pageNumbers);
+    batch.push(page);
+    batchChars += pageChars;
   }
+  if (batch.length) jobs.push(nativeJob(batch));
+
+  // Stop sibling requests as soon as one batch fails or the import is cancelled.
+  const controller = new AbortController();
+  const signal = request.signal ? AbortSignal.any([request.signal, controller.signal]) : controller.signal;
+  const results: Array<Awaited<ReturnType<PageJob["run"]>>> = [];
+  const runJob = async (index: number) => {
+    signal.throwIfAborted();
+    try {
+      results[index] = await jobs[index]!.run(signal);
+    } catch (error) {
+      controller.abort();
+      throw error;
+    }
+  };
+
+  let nextJob = 0;
+  // Later visual pages use page 1's candidates as statement context, so an
+  // OCR'd first page without native context has to finish before the rest start.
+  if (extracted.pages[0]?.needsOcr && !statementContext) {
+    await runJob(0);
+    statementContext = contextFromFirstPageCandidates(results[0]!.transactions);
+    nextJob = 1;
+  }
+  console.log(`[import] PDF: ${jobs.length} model requests, up to ${importConfig.modelConcurrency} in parallel`);
+  await Promise.all(Array.from({ length: Math.min(importConfig.modelConcurrency, jobs.length - nextJob) }, async () => {
+    while (nextJob < jobs.length) await runJob(nextJob++);
+  }));
+  jobs.forEach((job, index) => addResult(results[index]!, job.pageNumbers));
   if (!candidates.length) throw new Error("No transaction rows could be extracted from the PDF.");
   return { pageCount: extracted.pages.length, candidates, warnings };
 }

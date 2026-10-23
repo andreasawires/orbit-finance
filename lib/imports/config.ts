@@ -19,16 +19,25 @@ export const importConfig = {
   maxRenderedPixels: positiveInteger("IMPORT_MAX_RENDERED_MEGAPIXELS", 4) * 1_000_000,
   maxModelInputChars: positiveInteger("MODEL_MAX_INPUT_CHARS", 24_000),
   modelTimeoutMs: positiveInteger("MODEL_TIMEOUT_MS", 300_000),
+  // PDF pages are grouped into requests of about this size and converted in
+  // parallel; one long request is much slower than several short ones.
+  modelBatchChars: positiveInteger("MODEL_BATCH_CHARS", 12_000),
+  modelConcurrency: positiveInteger("MODEL_CONCURRENCY", 4),
   workerConcurrency: positiveInteger("IMPORT_WORKER_CONCURRENCY", 1),
 } as const;
 
 export type ModelStructuredOutputMode = "auto" | "json_schema" | "json_object";
+
+// "provider" sends nothing and keeps the provider's default. The other values
+// use OpenRouter's `reasoning` request field.
+export type ModelReasoningMode = "provider" | "off" | "low" | "medium" | "high";
 
 export type ModelProviderConfig = {
   baseUrl: string;
   apiKey: string | null;
   model: string;
   structuredOutput: ModelStructuredOutputMode;
+  reasoning: ModelReasoningMode;
   isRemote: boolean;
 };
 
@@ -71,11 +80,17 @@ export function getModelProviderConfig(): ModelProviderConfig {
     throw new Error("MODEL_STRUCTURED_OUTPUT must be auto, json_schema, or json_object.");
   }
 
+  const reasoning = (process.env.MODEL_REASONING?.trim().toLowerCase() || "provider") as ModelReasoningMode;
+  if (!["provider", "off", "low", "medium", "high"].includes(reasoning)) {
+    throw new Error("MODEL_REASONING must be provider, off, low, medium, or high.");
+  }
+
   return {
     baseUrl: baseUrl.toString().replace(/\/$/, ""),
     apiKey: process.env.MODEL_API_KEY?.trim() || null,
     model: requiredEnvironment("MODEL_NAME"),
     structuredOutput,
+    reasoning,
     isRemote,
   };
 }
