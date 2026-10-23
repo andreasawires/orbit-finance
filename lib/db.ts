@@ -292,7 +292,7 @@ export async function linkTransactionsAsTransfer(workspaceId: string, transactio
     if (Math.abs(firstAmount) !== Math.abs(secondAmount) || Math.sign(firstAmount) === Math.sign(secondAmount)) throw new Error("Transfers need equal amounts in opposite directions.");
     const transferId = (await client.query("SELECT gen_random_uuid() AS id")).rows[0].id;
     await client.query(`UPDATE transactions SET type='Transfer', transfer_id=$1,
-      transfer_account_id=CASE WHEN id=$2 THEN $3 ELSE $4 END,
+      transfer_account_id=CASE WHEN id=$2 THEN $3::uuid ELSE $4::uuid END,
       cost_center_id=NULL, updated_at=now()
       WHERE workspace_id = $5 AND id = ANY($6::uuid[])`, [transferId, first.id, second.account_id, first.account_id, workspaceId, [first.id, second.id]]);
     await client.query("COMMIT");
