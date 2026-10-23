@@ -48,17 +48,24 @@ const accountFromRow = (row: Row): Account => ({
   transferCount: Number(row.transfer_count ?? 0),
 });
 
+const isoInstant = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
+
 export const transactionFromRow = (row: Row): Transaction => {
   const merchant = String(row.description);
+  const isTransfer = row.type === "Transfer";
   return {
     id: String(row.id),
-    occurredAt: (row.occurred_at instanceof Date ? row.occurred_at : new Date(String(row.occurred_at))).toISOString(),
+    occurredAt: isoInstant(row.occurred_at),
     merchant, detail: String(row.note ?? ""),
-    costCenter: String(row.cost_center ?? "Uncategorized"),
+    // Transfers never carry a cost center, so they aren't "Uncategorized" either.
+    costCenter: isTransfer ? "" : String(row.cost_center ?? "Uncategorized"),
     costCenterId: row.cost_center_id ? String(row.cost_center_id) : null,
     account: String(row.account_name), accountId: String(row.account_id),
     transferId: row.transfer_id ? String(row.transfer_id) : null,
     transferAccountId: row.transfer_account_id ? String(row.transfer_account_id) : null,
+    transferAccount: row.transfer_account_name ? String(row.transfer_account_name) : null,
+    transferMerchant: row.transfer_description != null ? String(row.transfer_description) : null,
+    transferOccurredAt: row.transfer_occurred_at ? isoInstant(row.transfer_occurred_at) : null,
     amount: Number(row.amount), currency: String(row.transaction_currency), type: row.type as Transaction["type"],
     icon: merchant.trim().charAt(0).toUpperCase() || "$",
   };

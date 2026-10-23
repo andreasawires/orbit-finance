@@ -28,6 +28,10 @@ export type Transaction = {
   accountId: string;
   transferId: string | null;
   transferAccountId: string | null;
+  /** The other side of a transfer: its account, description and time. */
+  transferAccount: string | null;
+  transferMerchant: string | null;
+  transferOccurredAt: string | null;
   amount: number;
   currency: string;
   type: "Income" | "Expense" | "Transfer";
@@ -89,7 +93,8 @@ export type TransactionPage = {
   pageSize: number;
   pageCount: number;
   range: DateRange;
-  summary: { inflow: CurrencyAmount[]; outflow: CurrencyAmount[] };
+  /** Inflow and outflow leave transfers out; `transfer` is the money moved between accounts, each transfer counted once. */
+  summary: { inflow: CurrencyAmount[]; outflow: CurrencyAmount[]; transfer: CurrencyAmount[] };
   /** Full-day totals for each local day on this page, keyed YYYY-MM-DD. Only present when sorted by date. */
   dayTotals: Record<string, { count: number; amounts: CurrencyAmount[] }> | null;
 };
@@ -101,6 +106,9 @@ export type ReportCurrencyView = {
   net: number;
   rate: number;
   expenseCount: number;
+  /** Money moved between accounts, each transfer counted once. Not part of income, expense or net. */
+  transfer: number;
+  transferCount: number;
   /** Aligned with FinanceReport.buckets. */
   buckets: Array<{ income: number; expense: number }>;
   /** Root cost centers with their rolled-up expenses in this currency, then "uncategorized" for expenses without one. */

@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, CreditCard, Eye, EyeOff, Landmark, Plus, Trash2, WalletCards } from "lucide-react";
+import { ArrowDownRight, ArrowLeftRight, ArrowRight, ArrowUpRight, CreditCard, Eye, EyeOff, Landmark, Plus, Trash2, WalletCards } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { AccountForm, BatchTransactionForm, Modal, TransactionForm } from "@/components/modal";
 import { Pagination } from "@/components/pagination";
+import { InfoHint } from "@/components/info-hint";
 import { TransactionList } from "@/components/transaction-list";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
 import { usePageFilters } from "@/components/view-state-provider";
@@ -42,10 +43,11 @@ export default function Dashboard() {
     const periods = report.data?.currencies ?? [];
     const inflow = groupCurrencyAmounts(periods.map((period) => ({ currency: period.currency, amount: period.income })), preferences.currency);
     const outflow = groupCurrencyAmounts(periods.map((period) => ({ currency: period.currency, amount: period.expense })), preferences.currency);
+    const transfer = groupCurrencyAmounts(periods.map((period) => ({ currency: period.currency, amount: period.transfer })), preferences.currency);
     const net = groupCurrencyAmounts(periods.map((period) => ({ currency: period.currency, amount: period.net })), preferences.currency);
-    return { balance, inflow, outflow, net };
+    return { balance, inflow, outflow, transfer, net };
   }, [accounts, preferences.currency, report.data]);
-  const presentationValues = useMemo(() => [...totals.balance, ...totals.inflow, ...totals.outflow], [totals]);
+  const presentationValues = useMemo(() => [...totals.balance, ...totals.inflow, ...totals.outflow, ...totals.transfer], [totals]);
   const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
 
   return <div className="page dashboard-page">
@@ -71,8 +73,9 @@ export default function Dashboard() {
 
     <section className="stats-grid">
       <div className="stat-card total-stat"><div className="stat-top"><span className="stat-icon purple"><WalletCards size={18} /></span><span>Current · {accounts.length} account{accounts.length === 1 ? "" : "s"}</span><button className="icon-button mini" onClick={() => setShowBalance((v) => !v)}>{showBalance ? <Eye size={16} /> : <EyeOff size={16} />}</button></div><small>Total balance</small><strong>{showBalance ? <CurrencyAmounts values={totals.balance} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /> : "••••••••"}</strong></div>
-      <div className="stat-card"><div className="stat-top"><span className="stat-icon green"><ArrowDownRight size={18} /></span><span>{rangeLabel}</span></div><small>Total income</small><strong><CurrencyAmounts values={totals.inflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></div>
-      <div className="stat-card"><div className="stat-top"><span className="stat-icon orange"><ArrowUpRight size={18} /></span><span>{rangeLabel}</span></div><small>Total expenses</small><strong><CurrencyAmounts values={totals.outflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></div>
+      <div className="stat-card"><div className="stat-top"><span className="stat-icon green"><ArrowDownRight size={18} /></span><span>{rangeLabel}</span></div><small>Total income <InfoHint text="Income only. Transfers between your accounts are excluded." /></small><strong><CurrencyAmounts values={totals.inflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></div>
+      <div className="stat-card"><div className="stat-top"><span className="stat-icon orange"><ArrowUpRight size={18} /></span><span>{rangeLabel}</span></div><small>Total expenses <InfoHint text="Expenses only. Transfers between your accounts are excluded." /></small><strong><CurrencyAmounts values={totals.outflow} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></div>
+      <div className="stat-card"><div className="stat-top"><span className="stat-icon blue"><ArrowLeftRight size={18} /></span><span>{rangeLabel}</span></div><small>Total transfers</small><strong><CurrencyAmounts values={totals.transfer} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong></div>
       <div className="stat-card insight-stat"><span className="stat-icon lilac"><WalletCards size={18} /></span><div><small>Net cash flow</small><strong><CurrencyAmounts values={totals.net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><p>Income less expenses · {report.data ? formatDateRange(report.data.range, preferences.locale) : rangeLabel.toLowerCase()}.</p></div></div>
     </section>
 

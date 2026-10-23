@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation, type CurrencyDisplayMode } from "@/components/currency-presentation";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { usePageFilters } from "@/components/view-state-provider";
+import { InfoHint } from "@/components/info-hint";
 import { groupCurrencyAmounts, type CurrencyAmount, type FxRateMap } from "@/lib/currency-summary";
 import { formatMoney, type Account, type FinanceReport, type ReportCurrencyView } from "@/lib/data";
 import { DEFAULT_DATE_RANGE, formatDateRange, resolveDateRange, type DateRange, type DateRangeSelection } from "@/lib/date-range";
@@ -40,6 +41,7 @@ function convertedView(views: ReportCurrencyView[], targetCurrency: string, rate
   if (!views.every((view) => Number.isFinite(rateFor(view.currency)) && rateFor(view.currency)! > 0)) return null;
   const income = views.reduce((sum, view) => sum + view.income * rateFor(view.currency)!, 0);
   const expense = views.reduce((sum, view) => sum + view.expense * rateFor(view.currency)!, 0);
+  const transfer = views.reduce((sum, view) => sum + view.transfer * rateFor(view.currency)!, 0);
   const centers = new Map<string, SpendCenter>();
   for (const view of views) for (const center of view.costCenters) {
     const existing = centers.get(center.id);
@@ -48,6 +50,7 @@ function convertedView(views: ReportCurrencyView[], targetCurrency: string, rate
   return {
     currency: targetCurrency, income, expense, net: income - expense, rate: income ? ((income - expense) / income) * 100 : 0,
     expenseCount: views.reduce((sum, view) => sum + view.expenseCount, 0),
+    transfer, transferCount: views.reduce((sum, view) => sum + view.transferCount, 0),
     buckets: (views[0]?.buckets ?? []).map((_, index) => ({
       income: views.reduce((sum, view) => sum + view.buckets[index].income * rateFor(view.currency)!, 0),
       expense: views.reduce((sum, view) => sum + view.buckets[index].expense * rateFor(view.currency)!, 0),
@@ -98,7 +101,7 @@ export default function ReportsPage() {
   const nativeViews = useMemo(() => report?.currencies ?? [], [report]);
   const presentationValues = useMemo<CurrencyAmount[]>(() => [
     ...accounts.map((account) => ({ currency: account.currency, amount: account.balance })),
-    ...nativeViews.map((item) => ({ currency: item.currency, amount: item.income + item.expense })),
+    ...nativeViews.map((item) => ({ currency: item.currency, amount: item.income + item.expense + item.transfer })),
   ], [accounts, nativeViews]);
   const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
   const converted = useMemo(() => currencyPresentation.mode === "converted" && currencyPresentation.rates ? convertedView(nativeViews, preferences.currency, currencyPresentation.rates) : null, [currencyPresentation.mode, currencyPresentation.rates, nativeViews, preferences.currency]);
@@ -106,6 +109,8 @@ export default function ReportsPage() {
   const net = useMemo(() => groupCurrencyAmounts(nativeViews.map((item) => ({ currency: item.currency, amount: item.net })), preferences.currency), [nativeViews, preferences.currency]);
   const spend = useMemo(() => groupCurrencyAmounts(nativeViews.map((item) => ({ currency: item.currency, amount: item.expense })), preferences.currency), [nativeViews, preferences.currency]);
   const expenseCount = nativeViews.reduce((sum, item) => sum + item.expenseCount, 0);
+  const transfers = useMemo(() => groupCurrencyAmounts(nativeViews.map((item) => ({ currency: item.currency, amount: item.transfer })), preferences.currency), [nativeViews, preferences.currency]);
+  const transferCount = nativeViews.reduce((sum, item) => sum + item.transferCount, 0);
   const selectedRange = rangeFor(view.range, preferences.timezone);
   const multiYear = !!report && report.buckets.length > 0 && report.buckets[0].slice(0, 4) !== report.buckets.at(-1)!.slice(0, 4);
   const labels = report ? report.buckets.map((key) => bucketLabel(key, report.granularity, preferences.locale, multiYear)) : [];
@@ -131,9 +136,10 @@ export default function ReportsPage() {
     {reportError && <div className="form-error">{reportError}</div>}
     {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
     <section className="report-kpis">
-      <div className="panel"><span>Net income</span><strong><CurrencyAmounts values={net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><small><i>Income less expenses</i></small></div>
-      <div className="panel"><span>Total recorded spend</span><strong><CurrencyAmounts values={spend} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><small><i>Across {expenseCount} expenses</i></small></div>
+      <div className="panel"><span>Net income <InfoHint text="Income less expenses. Transfers between your accounts are excluded." /></span><strong><CurrencyAmounts values={net} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><small><i>Income less expenses</i></small></div>
+      <div className="panel"><span>Total recorded spend <InfoHint text="Expenses only. Transfers between your accounts are excluded." /></span><strong><CurrencyAmounts values={spend} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><small><i>Across {expenseCount} expenses</i></small></div>
       <div className="panel"><span>Savings rate</span><strong className="currency-rates">{views.map((item) => <span key={item.currency}>{converted ? "" : `${item.currency} `}{item.rate.toFixed(1)}%</span>)}</strong><small><i>Based on recorded income</i></small></div>
+      <div className="panel"><span>Total transfers</span><strong><CurrencyAmounts values={transfers} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong><small><i>Across {transferCount} transfer{transferCount === 1 ? "" : "s"} · not counted as income or spend</i></small></div>
     </section>
     {views.length && report ? views.map((item) => <section className="report-currency-section" key={item.currency}>
       {!converted && <h2>{item.currency} report</h2>}

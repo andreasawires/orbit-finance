@@ -11,7 +11,13 @@ type Row = Record<string, unknown>;
 
 const TRANSACTION_FROM = `FROM transactions t JOIN accounts a ON a.id = t.account_id AND a.workspace_id = t.workspace_id
   LEFT JOIN cost_centers c ON c.id = t.cost_center_id AND c.workspace_id = t.workspace_id`;
-const TRANSACTION_COLUMNS = "t.*, a.name AS account_name, a.currency AS transaction_currency, c.name AS cost_center";
+const TRANSACTION_COLUMNS = `t.*, a.name AS account_name, a.currency AS transaction_currency, c.name AS cost_center,
+  ta.name AS transfer_account_name, p.description AS transfer_description, p.occurred_at AS transfer_occurred_at`;
+// Row queries also show the other side of a transfer. Kept out of TRANSACTION_FROM so the aggregates stay one row per transaction.
+const TRANSACTION_ROWS_FROM = `${TRANSACTION_FROM}
+  LEFT JOIN accounts ta ON ta.id = t.transfer_account_id AND ta.workspace_id = t.workspace_id
+  LEFT JOIN LATERAL (SELECT o.description, o.occurred_at FROM transactions o
+    WHERE o.workspace_id = t.workspace_id AND o.transfer_id = t.transfer_id AND o.id <> t.id LIMIT 1) p ON true`;
 
 // Ranges and day buckets follow the workspace timezone stored on the server, never one sent by the browser.
 async function workspaceSettings(workspaceId: string) {
@@ -33,14 +39,16 @@ function transactionFilter(workspaceId: string, filters: TransactionFilters, tim
     const ids = filters.costCenterIds.filter((id) => id !== UNCATEGORIZED);
     const matches = [
       ...(ids.length ? [`t.cost_center_id = ANY(${param(ids)}::uuid[])`] : []),
-      ...(filters.costCenterIds.includes(UNCATEGORIZED) ? ["t.cost_center_id IS NULL"] : []),
+      // Transfers never carry a cost center, so they aren't "Uncategorized" either.
+      ...(filters.costCenterIds.includes(UNCATEGORIZED) ? ["(t.cost_center_id IS NULL AND t.type <> 'Transfer')"] : []),
     ];
     clauses.push(`(${matches.join(" OR ")})`);
   }
   if (filters.q) {
     // Same haystack the ledger search has always used: description, note and cost center name together.
+    // Transfers have no cost center, so the "Uncategorized" fallback skips them (concat_ws drops the NULL).
     const pattern = param(`%${filters.q.replace(/[\\%_]/g, (character) => `\\${character}`)}%`);
-    clauses.push(`concat_ws(' ', t.description, t.note, COALESCE(c.name, 'Uncategorized')) ILIKE ${pattern}`);
+    clauses.push(`concat_ws(' ', t.description, t.note, CASE WHEN t.type = 'Transfer' THEN NULL ELSE COALESCE(c.name, 'Uncategorized') END) ILIKE ${pattern}`);
   }
   return { range, where: clauses.join(" AND "), params };
 }
@@ -53,26 +61,35 @@ function orderBy(sort: TransactionSort, dir: SortDirection) {
   return `${SORT_COLUMNS[sort]} ${direction}, t.occurred_at DESC, t.created_at DESC, t.id DESC`;
 }
 
+// The two sides of a transfer cancel out, so the total is the amount moved: one row per transfer, even when the
+// filter (an account, say) only lets one side through.
+const transferTotals = (where: string) => `SELECT currency, SUM(amount) AS transfer, COUNT(*)::int AS transfer_count FROM (
+    SELECT a.currency, MAX(ABS(t.amount)) AS amount ${TRANSACTION_FROM} WHERE ${where} AND t.type = 'Transfer'
+    GROUP BY a.currency, COALESCE(t.transfer_id, t.id)) moved GROUP BY currency`;
+
 const amounts = (rows: Row[], column: string, mainCurrency: string) =>
   groupCurrencyAmounts(rows.map((row) => ({ currency: String(row.currency), amount: Number(row[column] ?? 0) })), mainCurrency);
 
 export async function listTransactions(workspaceId: string, query: TransactionQuery): Promise<TransactionPage> {
   const { currency: mainCurrency, timeZone } = await workspaceSettings(workspaceId);
   const { range, where, params } = transactionFilter(workspaceId, query, timeZone);
-  const summary = await db.query(`SELECT a.currency, COUNT(*)::int AS count,
-      COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'Income'), 0) AS inflow,
-      COALESCE(SUM(ABS(t.amount)) FILTER (WHERE t.type = 'Expense'), 0) AS outflow
-    ${TRANSACTION_FROM} WHERE ${where} GROUP BY a.currency`, params);
+  const [summary, transfers] = await Promise.all([
+    db.query(`SELECT a.currency, COUNT(*)::int AS count,
+        COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'Income'), 0) AS inflow,
+        COALESCE(SUM(ABS(t.amount)) FILTER (WHERE t.type = 'Expense'), 0) AS outflow
+      ${TRANSACTION_FROM} WHERE ${where} GROUP BY a.currency`, params),
+    db.query(transferTotals(where), params),
+  ]);
   const total = summary.rows.reduce((sum, row) => sum + Number(row.count), 0);
   const pageCount = Math.max(1, Math.ceil(total / query.pageSize));
   // A page past the end (e.g. after deleting the last row on it) falls back to the last page that exists.
   const page = Math.min(query.page, pageCount);
-  const rows = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_FROM} WHERE ${where}
+  const rows = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_ROWS_FROM} WHERE ${where}
     ORDER BY ${orderBy(query.sort, query.dir)} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, query.pageSize, (page - 1) * query.pageSize]);
   const items = rows.rows.map(transactionFromRow);
   return {
     items, total, page, pageSize: query.pageSize, pageCount, range,
-    summary: { inflow: amounts(summary.rows, "inflow", mainCurrency), outflow: amounts(summary.rows, "outflow", mainCurrency) },
+    summary: { inflow: amounts(summary.rows, "inflow", mainCurrency), outflow: amounts(summary.rows, "outflow", mainCurrency), transfer: amounts(transfers.rows, "transfer", mainCurrency) },
     dayTotals: query.sort === "date" ? await dayTotals(where, params, items, timeZone, mainCurrency) : null,
   };
 }
@@ -101,7 +118,7 @@ const csvCell = (value: string) => `"${value.replaceAll('"', '""')}"`;
 export async function exportTransactionsCsv(workspaceId: string, filters: TransactionFilters, sort: TransactionSort, dir: SortDirection) {
   const { timeZone } = await workspaceSettings(workspaceId);
   const { where, params } = transactionFilter(workspaceId, filters, timeZone);
-  const result = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_FROM} WHERE ${where} ORDER BY ${orderBy(sort, dir)}`, params);
+  const result = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_ROWS_FROM} WHERE ${where} ORDER BY ${orderBy(sort, dir)}`, params);
   return [["Date", "Description", "Note", "Type", "Account", "Cost center", "Amount", "Currency"], ...result.rows.map(transactionFromRow)
     .map((t) => [utcToZonedDate(t.occurredAt, timeZone), t.merchant, t.detail, t.type, t.account, t.costCenter, String(t.amount), t.currency])]
     .map((row) => row.map(csvCell).join(",")).join("\n");
@@ -114,7 +131,7 @@ export async function transferCandidates(workspaceId: string, transactionId: str
   const source = await db.query<{ amount: string }>("SELECT amount FROM transactions WHERE workspace_id = $1 AND id = $2", [workspaceId, transactionId]);
   if (!source.rowCount) throw new Error("Transaction not found.");
   const amount = Number(source.rows[0].amount);
-  const result = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_FROM}
+  const result = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_ROWS_FROM}
     WHERE t.workspace_id = $1 AND t.account_id = $2 AND t.id <> $3 AND t.transfer_id IS NULL AND t.type = $4 AND t.amount = -$5::numeric
     ORDER BY t.occurred_at DESC, t.created_at DESC LIMIT 200`, [workspaceId, accountId, transactionId, amount < 0 ? "Income" : "Expense", source.rows[0].amount]);
   return { items: result.rows.map(transactionFromRow) };
@@ -126,7 +143,7 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
   const unit = resolveGranularity(range, granularity);
   const buckets = bucketStarts(range, unit);
   const next = params.length;
-  const [bucketResult, spendResult, centersResult] = await Promise.all([
+  const [bucketResult, spendResult, centersResult, transferResult] = await Promise.all([
     db.query(`SELECT a.currency, to_char(date_trunc($${next + 1}::text, t.occurred_at AT TIME ZONE $${next + 2}::text), 'YYYY-MM-DD') AS bucket,
         COUNT(*) FILTER (WHERE t.type = 'Expense')::int AS expense_count,
         COALESCE(SUM(t.amount) FILTER (WHERE t.type = 'Income'), 0) AS income,
@@ -136,6 +153,7 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
       ${TRANSACTION_FROM} WHERE ${where} AND t.type = 'Expense'
       GROUP BY t.cost_center_id, a.currency`, params),
     db.query("SELECT * FROM cost_centers WHERE workspace_id = $1 ORDER BY created_at, name", [workspaceId]),
+    db.query(transferTotals(where), params),
   ]);
   const centers = buildTree(centersResult.rows, spendResult.rows.filter((row) => row.cost_center_id), mainCurrency);
   // Expenses without a cost center become one extra slice, so the breakdown adds up to all spend.
@@ -149,9 +167,11 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
       const income = rows.reduce((sum, row) => sum + Number(row.income), 0);
       const expense = rows.reduce((sum, row) => sum + Number(row.expense), 0);
       const net = income - expense;
+      const transfers = transferResult.rows.find((row) => row.currency === currency);
       return {
         currency, income, expense, net, rate: income ? (net / income) * 100 : 0,
         expenseCount: rows.reduce((sum, row) => sum + Number(row.expense_count), 0),
+        transfer: Number(transfers?.transfer ?? 0), transferCount: Number(transfers?.transfer_count ?? 0),
         buckets: buckets.map((key) => ({ income: Number(byBucket.get(key)?.income ?? 0), expense: Number(byBucket.get(key)?.expense ?? 0) })),
         costCenters: [
           ...centers.map((center) => ({ id: center.id, name: center.name, color: center.color, total: center.spend.find((value: CurrencyAmount) => value.currency === currency)?.amount ?? 0 })),
@@ -165,6 +185,6 @@ export async function getReport(workspaceId: string, selection: DateRangeSelecti
 /** Full workspace backup, including every transaction. */
 export async function getWorkspaceExport(workspaceId: string) {
   const data = await getFinanceData(workspaceId);
-  const transactions = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_FROM} WHERE t.workspace_id = $1 ORDER BY t.occurred_at DESC, t.created_at DESC`, [workspaceId]);
+  const transactions = await db.query(`SELECT ${TRANSACTION_COLUMNS} ${TRANSACTION_ROWS_FROM} WHERE t.workspace_id = $1 ORDER BY t.occurred_at DESC, t.created_at DESC`, [workspaceId]);
   return { accounts: data.accounts, transactions: transactions.rows.map(transactionFromRow), costCenters: data.costCenters, currencies: data.currencies, preferences: data.preferences };
 }

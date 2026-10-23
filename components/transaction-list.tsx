@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, Check, MoreHorizontal } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Check, MoreHorizontal } from "lucide-react";
 import { Fragment, useRef } from "react";
 import { CurrencyAmounts, type CurrencyDisplayMode } from "@/components/currency-presentation";
 import type { FxRateMap } from "@/lib/currency-summary";
@@ -14,6 +14,17 @@ function SelectBox({ checked, indeterminate = false, disabled = false, label, on
     <input type="checkbox" aria-label={label} checked={checked} disabled={disabled} ref={(input) => { if (input) input.indeterminate = indeterminate; }} onChange={(event) => { onChange(event.target.checked, shift.current); shift.current = false; }} />
     <span className="account-filter-check">{indeterminate ? <i className="row-check-dash" /> : <Check size={13} />}</span>
   </label>;
+}
+
+// Transfers have no cost center; that column names the other side instead. Its description and date only show when they
+// differ from this row's, which they can for two imported transactions linked as one transfer.
+function TransferCell({ item, locale, timeZone }: { item: Transaction; locale: string; timeZone: string }) {
+  const date = item.transferOccurredAt && utcToZonedDate(item.transferOccurredAt, timeZone) !== utcToZonedDate(item.occurredAt, timeZone) ? formatDate(item.transferOccurredAt, timeZone, locale) : "";
+  const merchant = item.transferMerchant && item.transferMerchant !== item.merchant ? item.transferMerchant : "";
+  return <span className="transfer-cell" translate="no">
+    <span><ArrowLeftRight size={12} />{item.amount < 0 ? "To" : "From"} {item.transferAccount ?? "another account"}</span>
+    {merchant || date ? <small>{[merchant, date].filter(Boolean).join(" · ")}</small> : null}
+  </span>;
 }
 
 // Passing `dayTotals` groups the rows by local day. The totals come from the server and cover the whole day,
@@ -45,7 +56,7 @@ export function TransactionList({ items, onSelect, compact = false, dayTotals, l
           <span className="merchant-cell"><i className={`merchant-icon ${item.type.toLowerCase()}`}>{item.icon}</i><span><strong>{item.merchant}</strong><small>{item.detail}</small></span></span>
           <span className="date-cell">{formatDate(item.occurredAt, timeZone, locale)}</span>
           {/* Cost center names are user data: keep them out of browser translation, and remount on change so a rewritten text node can't hide the update. */}
-          <span key={item.costCenterId ?? "uncategorized"} translate="no"><i className="center-dot" />{item.costCenter}</span>
+          {item.type === "Transfer" ? <TransferCell item={item} locale={locale} timeZone={timeZone} /> : <span key={item.costCenterId ?? "uncategorized"} translate="no"><i className="center-dot" />{item.costCenter}</span>}
           <span>{item.account}</span>
           <strong className={`amount ${item.amount > 0 ? "positive" : ""}`}>{item.amount > 0 && item.type === "Income" ? "+" : ""}{formatMoney(item.amount, item.currency, locale)}</strong>
           <span className="row-actions">{item.type === "Income" ? <ArrowDownLeft size={15} /> : item.type === "Transfer" ? <ArrowUpRight size={15} /> : <MoreHorizontal size={17} />}</span>

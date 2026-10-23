@@ -1,12 +1,13 @@
 "use client";
 
-import { ArrowDownUp, ChevronDown, Download, FolderTree, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ArrowDownUp, ArrowLeftRight, ChevronDown, Download, FolderTree, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDeleteDialog } from "@/components/confirm-delete-dialog";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { BatchTransactionForm, Modal, TransactionForm } from "@/components/modal";
 import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { Pagination } from "@/components/pagination";
+import { InfoHint } from "@/components/info-hint";
 import { TransactionList } from "@/components/transaction-list";
 import { CurrencyAmounts, CurrencyModeControl, useCurrencyPresentation } from "@/components/currency-presentation";
 import { usePageFilters } from "@/components/view-state-provider";
@@ -65,7 +66,7 @@ export default function TransactionsPage() {
     ...query.accountIds.map((accountId) => ({ id: accountId, label: accounts.find((account) => account.id === accountId)?.name ?? "Account", kind: "account" as const })),
     ...query.costCenterIds.map((centerId) => ({ id: centerId, label: centerOptions.find((center) => center.id === centerId)?.label ?? "Cost center", kind: "costCenter" as const })),
   ], [accounts, centerOptions, query.accountIds, query.costCenterIds, query.type]);
-  const presentationValues = useMemo(() => [...(result?.summary.inflow ?? []), ...(result?.summary.outflow ?? [])], [result]);
+  const presentationValues = useMemo(() => [...(result?.summary.inflow ?? []), ...(result?.summary.outflow ?? []), ...(result?.summary.transfer ?? [])], [result]);
   const currencyPresentation = useCurrencyPresentation(presentationValues, preferences.currency);
 
   function toggleSelected(ids: string[], checked: boolean) {
@@ -105,7 +106,7 @@ export default function TransactionsPage() {
       </div>
       {currencyPresentation.canConvert && <CurrencyModeControl targetCurrency={preferences.currency} mode={currencyPresentation.mode} setMode={currencyPresentation.setDisplayMode} loading={currencyPresentation.loading} error={currencyPresentation.error} providerLabel={currencyPresentation.providerLabel} rateDates={currencyPresentation.rateDates} onRefresh={() => void currencyPresentation.refresh()} />}
       {activeFilters.length > 0 && <div className="active-filters"><span>Active filters</span>{activeFilters.map((filter) => <button key={`${filter.kind}-${filter.id}`} onClick={() => removeFilter(filter)}>{filter.label}<X size={12} /></button>)}<button className="clear-filters" onClick={() => updateQuery({ type: "", accountIds: [], costCenterIds: [] })}>Clear all</button></div>}
-      <div className="table-summary"><span><strong>{result?.total ?? 0}</strong> transactions</span><span>Total outflow <strong className="negative"><CurrencyAmounts values={result?.summary.outflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></span><span>Total inflow <strong className="positive"><CurrencyAmounts values={result?.summary.inflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></span>{listLoading && result && <span className="table-summary-status">Updating…</span>}</div>
+      <div className="table-summary"><span><strong>{result?.total ?? 0}</strong> transactions</span><span>Total outflow <InfoHint text="Expenses only. Transfers between your accounts are excluded." /> <strong className="negative"><CurrencyAmounts values={result?.summary.outflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="−" /></strong></span><span>Total inflow <InfoHint text="Income only. Transfers between your accounts are excluded." /> <strong className="positive"><CurrencyAmounts values={result?.summary.inflow ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} sign="+" /></strong></span><span>Total transfers <strong className="transfer"><ArrowLeftRight size={13} /><CurrencyAmounts values={result?.summary.transfer ?? []} locale={preferences.locale} mainCurrency={preferences.currency} mode={currencyPresentation.mode} rates={currencyPresentation.rates} /></strong></span>{listLoading && result && <span className="table-summary-status">Updating…</span>}</div>
       {(listError || exportError) && <div className="form-error">{listError || exportError}</div>}
       {bulkIds.length > 0 && <div className="bulk-bar"><span><strong>{bulkIds.length}</strong> selected</span><button className="button primary" onClick={() => setBulkModal(true)}><FolderTree size={15} /> Assign cost center</button><button className="button secondary" onClick={() => setSelection({ key: "", ids: new Set() })}><X size={14} /> Clear</button></div>}
       <div className="transaction-scroll">{items.length ? <TransactionList items={items} dayTotals={result?.dayTotals} locale={preferences.locale} timeZone={preferences.timezone} mainCurrency={preferences.currency} currencyMode={currencyPresentation.mode} rates={currencyPresentation.rates} onSelect={setSelected} selectedIds={selectedIds} onToggleSelect={toggleSelected} /> : <div className="empty-state"><Search size={26} /><strong>{loading || (listLoading && !result) ? "Loading…" : "No transactions found"}</strong><span>{accounts.length ? "Change your filters or date range, or add a transaction." : "Add an account before recording a transaction."}</span></div>}</div>
