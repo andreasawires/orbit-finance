@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -s sh install.sh scripts/*.sh
+      - name: Validate Compose profiles
+        run: |
+          # shellcheck disable=SC2086 # $profiles is intentionally split into arguments
+          for profiles in "" "--profile db" "--profile proxy" "--profile db --profile proxy"; do
+            echo "::group::docker compose $profiles config"
+            docker compose $profiles config --quiet
+            docker compose -f docker-compose.yml -f docker-compose.build.yml $profiles config --quiet
+            echo "::endgroup::"
+          done
+      - name: Validate Caddyfile
+        run: docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" -e ORBIT_DOMAIN=orbit.example.com caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

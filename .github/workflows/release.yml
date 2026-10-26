@@ -1,0 +1,189 @@
+name: Release
+
+# Push a tag like v1.2.0 (see README "Releasing"). Builds and publishes:
+#   - ghcr.io/andreasawires/orbit-finance:<version>, :<major>.<minor>, :latest (linux/amd64)
+#   - a GitHub Release with auto-generated notes, the Node tarball, and its sha256
+#   - the GitHub Pages site with latest.json, install.sh, docker-compose.yml, and Caddyfile
+# Prerelease tags (v1.2.0-rc.1) publish the image and a prerelease, but never update latest or Pages.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      security: ${{ steps.meta.outputs.security }}
+      min_upgrade_from: ${{ steps.meta.outputs.min_upgrade_from }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read release metadata
+        id: meta
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          pkg=$(node -p 'require("./package.json").version')
+          if [ "$version" != "$pkg" ]; then
+            echo "::error::Tag $tag does not match package.json version $pkg. Use npm run release:patch|minor|major."
+            exit 1
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          # Optional trailers in the annotated tag message:
+          #   Security: true
+          #   Min-Upgrade-From: 1.2.0
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          message=$(git tag -l --format='%(contents)' "$tag")
+          security=$(printf '%s\n' "$message" | sed -n 's/^[Ss]ecurity:[[:space:]]*\(true\|yes\)[[:space:]]*$/true/p' | head -n 1)
+          min=$(printf '%s\n' "$message" | sed -n 's/^[Mm]in-[Uu]pgrade-[Ff]rom:[[:space:]]*v\{0,1\}\([0-9][0-9A-Za-z.-]*\)[[:space:]]*$/\1/p' | head -n 1)
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "security=${security:-false}"
+            echo "min_upgrade_from=$min"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $version (prerelease=$prerelease, security=${security:-false}, min_upgrade_from=${min:-none})"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: tags
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # latest and major.minor are skipped automatically for prerelease tags.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          # @firecrawl/pdf-inspector only ships a linux x64 native binary.
+          platforms: linux/amd64
+          push: true
+          build-args: ORBIT_VERSION=${{ needs.verify.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.tags.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  node-tarball:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run package:node
+      - name: Smoke-test the tarball
+        run: |
+          (cd dist && sha256sum -c ./*.sha256)
+          mkdir -p /tmp/smoke
+          tar -xzf dist/orbit-finance-v*-linux-x64.tar.gz -C /tmp/smoke
+          cd /tmp/smoke/orbit-finance-v*-linux-x64
+          node --import tsx -e 'import("pg-boss").then(() => console.log("worker dependencies load"))'
+          UPDATE_CHECK=false npx next start -p 3999 > server.log 2>&1 &
+          ok=false
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3999/api/update-status; then ok=true; break; fi
+            sleep 1
+          done
+          kill %1 || true
+          cat server.log
+          [ "$ok" = true ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-tarball
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [verify, image, node-tarball]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: node-tarball
+          path: dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          SECURITY: ${{ needs.verify.outputs.security }}
+        run: |
+          flags="--generate-notes --verify-tag --title v${VERSION}"
+          [ "$PRERELEASE" = "true" ] && flags="$flags --prerelease" || flags="$flags --latest"
+          notes=""
+          [ "$SECURITY" = "true" ] && notes="**This is a security release. Please update.**"
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" $flags --notes "$notes" dist/*
+
+  pages:
+    needs: [verify, release]
+    if: needs.verify.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build Pages site
+        env:
+          SECURITY: ${{ needs.verify.outputs.security }}
+          MIN_UPGRADE_FROM: ${{ needs.verify.outputs.min_upgrade_from }}
+          NOTES_URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+        run: sh scripts/build-pages.sh "${{ needs.verify.outputs.version }}" site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

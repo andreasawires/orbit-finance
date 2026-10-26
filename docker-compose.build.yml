@@ -1,0 +1,15 @@
+# Build the app image from this checkout instead of pulling it from GHCR:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile db up -d --build
+x-build: &build
+  image: orbit-finance-app:local
+  build:
+    context: .
+    target: runtime
+
+services:
+  migrate:
+    <<: *build
+  web:
+    <<: *build
+  import-worker:
+    <<: *build

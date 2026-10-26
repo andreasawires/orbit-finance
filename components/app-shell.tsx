@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useFinanceDataContext } from "@/components/finance-data-provider";
+import { UpdateBanner } from "@/components/update-banner";
 import { useWorkspace } from "@/components/workspace-provider";
 
 const navItems = [
@@ -97,6 +98,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {mobileOpen && <button className="sidebar-scrim" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
 
       <main className="main-content" key={workspace?.id ?? "workspace-loading"}>
+        <UpdateBanner />
         {workspaceLoading ? <div className="page"><div className="empty-state">Loading workspace…</div></div>
           : workspaceError ? <div className="page"><div className="data-error"><strong>Could not load workspaces.</strong><span>{workspaceError}</span></div></div>
             : children}

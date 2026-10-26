@@ -730,3 +730,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 @media (max-width: 540px) {
   .pagination { flex-wrap: wrap; justify-content: center; }
 }
+
+/* Update notice (components/update-banner.tsx) */
+.update-banner { max-width: 1440px; margin: 0 auto 22px; padding: 12px 14px; display: flex; align-items: center; gap: 12px; border: 1px solid color-mix(in srgb, var(--purple), transparent 65%); border-radius: 12px; background: color-mix(in srgb, var(--purple), transparent 92%); color: var(--purple); }
+.update-banner.security { border-color: color-mix(in srgb, var(--red), transparent 40%); background: color-mix(in srgb, var(--red), transparent 88%); color: var(--red); }
+.update-banner-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.update-banner-copy strong { color: var(--ink); font-size: 12px; }
+.update-banner-copy small { color: var(--muted); font-weight: 400; }
+.update-banner-copy > span { color: var(--muted); font-size: 11px; }
+.update-banner-command { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.update-banner-command code { padding: 4px 8px; border-radius: 6px; background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-banner-command button { border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; padding: 3px; }
+.update-banner .icon-button { width: 30px; height: 30px; }
+@media (max-width: 720px) { .update-banner { flex-wrap: wrap; } }

@@ -1,7 +1,29 @@
 {
   "name": "orbit-finance",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Local-first personal finance app: accounts, transactions, cost centers, reports, and AI-assisted statement imports on your own PostgreSQL.",
+  "keywords": [
+    "finance",
+    "personal-finance",
+    "budgeting",
+    "self-hosted",
+    "local-first",
+    "nextjs",
+    "postgresql",
+    "bank-statements",
+    "ollama"
+  ],
+  "homepage": "https://github.com/andreasawires/orbit-finance#readme",
+  "bugs": {
+    "url": "https://github.com/andreasawires/orbit-finance/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andreasawires/orbit-finance.git"
+  },
+  "engines": {
+    "node": ">=22.9.0"
+  },
   "scripts": {
     "dev": "next dev --webpack --hostname 0.0.0.0",
     "build": "next build --webpack",
@@ -10,7 +32,11 @@
     "lint": "eslint .",
     "test": "node --import tsx --test tests/*.test.ts",
     "db:migrate": "node --env-file-if-exists=.env --import tsx scripts/migrate.ts",
-    "worker": "node --env-file-if-exists=.env --import tsx workers/import-worker.ts"
+    "worker": "node --env-file-if-exists=.env --import tsx workers/import-worker.ts",
+    "release:patch": "npm version patch -m \"Release v%s\"",
+    "release:minor": "npm version minor -m \"Release v%s\"",
+    "release:major": "npm version major -m \"Release v%s\"",
+    "package:node": "sh scripts/package-node-release.sh"
   },
   "dependencies": {
     "@firecrawl/pdf-inspector": "^1.11.2",
