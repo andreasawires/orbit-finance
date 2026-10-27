@@ -16,11 +16,21 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
 
+ARG ORBIT_VERSION=dev
+
+LABEL org.opencontainers.image.title="Orbit Finance" \
+      org.opencontainers.image.description="Local-first personal finance app backed by PostgreSQL." \
+      org.opencontainers.image.source="https://github.com/andreasawires/orbit-finance" \
+      org.opencontainers.image.url="https://github.com/andreasawires/orbit-finance" \
+      org.opencontainers.image.version="${ORBIT_VERSION}" \
+      org.opencontainers.image.licenses="MIT"
+
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
-    IMPORT_STORAGE_PATH=/app/data/imports
+    IMPORT_STORAGE_PATH=/app/data/imports \
+    INSTALL_METHOD=docker
 
 # Poppler renders only the PDF pages that pdf-inspector marks for visual parsing.
 RUN apt-get update \
