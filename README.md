@@ -26,6 +26,16 @@ The model receives only the current page text/image plus a short first-page cont
 
 ## Install
 
+### Supported platforms
+
+| Install method | Platforms |
+| --- | --- |
+| Docker (published image) | `linux/amd64` and `linux/arm64`: Linux servers, Raspberry Pi 4/5 (64-bit OS), Docker Desktop on Intel and Apple Silicon Macs and on Windows. Docker picks the native architecture. |
+| Node.js release tarball | Linux x64 (glibc), Linux arm64 (glibc), macOS on Apple Silicon. Not Intel Macs, Alpine/musl, or Windows: use Docker there. |
+| From source | Any platform where `@firecrawl/pdf-inspector` and `sharp` have native binaries: the above plus Windows x64 (untested). |
+
+The Docker image includes Poppler. Node.js and source installs need **Poppler's `pdftoppm`** on the host to render scanned PDF pages: `brew install poppler` on macOS, `sudo apt-get install poppler-utils` on Debian/Ubuntu, `sudo dnf install poppler-utils` on Fedora/RHEL. They also need **Node.js 22.9 or newer**.
+
 ### Quick install
 
 ```bash
@@ -76,29 +86,37 @@ Open [http://localhost:3000](http://localhost:3000), or `http://<your-computer-l
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile db up -d --build
 ```
 
-All app containers keep the existing hardening: `no-new-privileges`, all Linux capabilities dropped (Caddy gets back only `NET_BIND_SERVICE`), and health checks on Postgres and the web app.
+Set `APP_PLATFORM=linux/amd64` (or `linux/arm64`) in `.env` only if you need to force an architecture.
 
-> **Apple Silicon and other ARM hosts:** the image is `linux/amd64` only, because `@firecrawl/pdf-inspector` ships just a Linux x64 native binary. Docker Desktop runs it under emulation (Rosetta or QEMU). It works, but imports are slower. `APP_PLATFORM=linux/amd64` in `.env` keeps this explicit.
+All app containers keep the existing hardening: `no-new-privileges`, all Linux capabilities dropped (Caddy gets back only `NET_BIND_SERVICE`), and health checks on Postgres and the web app.
 
 > **Upgrading a pre-1.0 checkout** that ran `docker compose up -d --build`: Postgres is now behind the `db` profile and the app image comes from GHCR. Add `COMPOSE_PROFILES=db` to your `.env` (your existing `orbit-postgres-data` volume and its password are kept), then either run `docker compose pull && docker compose up -d` or keep building locally with the build override above.
 
 ### Node.js
 
-Each release attaches `orbit-finance-v<version>-linux-x64.tar.gz` and its `.sha256`. It contains the production Next.js build, production `node_modules`, the migrations, and the worker, so nothing is built on the server. It needs **Linux x64 and Node.js 22.9 or newer** (the native PDF dependency is Linux x64 only; on macOS use Docker or run from source). The installer's Node.js option sets this up under `~/orbit-finance/releases/` with a `current` symlink and a shared `.env`; to do it by hand:
+Each release attaches one tarball per platform, each with a `.sha256`:
+
+- `orbit-finance-v<version>-linux-x64.tar.gz`
+- `orbit-finance-v<version>-linux-arm64.tar.gz`
+- `orbit-finance-v<version>-darwin-arm64.tar.gz`
+
+A tarball contains the production Next.js build, production `node_modules` with that platform's native binaries, the migrations, and the worker, so nothing is built on the server. It needs Node.js 22.9 or newer built for the same platform (on a Mac, a native arm64 Node, not one running under Rosetta) and Poppler's `pdftoppm` (see [Supported platforms](#supported-platforms)). The installer's Node.js option detects the OS and architecture with `uname`, checks for `pdftoppm`, downloads the matching tarball, verifies its checksum, and sets it up under `~/orbit-finance/releases/` with a `current` symlink and a shared `.env`. On an Intel Mac it stops and points you to Docker, because the PDF library has no `darwin-x64` build. To install by hand:
 
 ```bash
 version=1.0.0
-curl -fsSLO https://github.com/andreasawires/orbit-finance/releases/download/v$version/orbit-finance-v$version-linux-x64.tar.gz
-curl -fsSLO https://github.com/andreasawires/orbit-finance/releases/download/v$version/orbit-finance-v$version-linux-x64.tar.gz.sha256
-sha256sum -c orbit-finance-v$version-linux-x64.tar.gz.sha256
-tar -xzf orbit-finance-v$version-linux-x64.tar.gz && cd orbit-finance-v$version-linux-x64
+platform=linux-x64     # or linux-arm64, darwin-arm64
+file=orbit-finance-v$version-$platform.tar.gz
+curl -fsSLO https://github.com/andreasawires/orbit-finance/releases/download/v$version/$file
+curl -fsSLO https://github.com/andreasawires/orbit-finance/releases/download/v$version/$file.sha256
+shasum -a 256 -c $file.sha256
+tar -xzf $file && cd orbit-finance-v$version-$platform
 cp .env.example .env   # set DATABASE_URL, IMPORT_STORAGE_PATH, INSTALL_METHOD=node, MODEL_*
 npm run db:migrate
 npm start              # web UI on port 3000; PORT=8080 npm start to change it
 npm run worker         # in another terminal or as a service
 ```
 
-The installer prints systemd unit examples for the web app and the worker. Put any reverse proxy in front of port 3000 for HTTPS.
+On Linux the installer prints systemd unit examples for the web app and the worker; on macOS, use a launchd agent or a process manager such as pm2. Put any reverse proxy in front of port 3000 for HTTPS.
 
 ### From source
 
@@ -162,7 +180,7 @@ When the manifest lists a newer version than yours, the app shell shows a dismis
 
 ## Releasing
 
-Releases are cut by pushing a semver tag. [`.github/workflows/release.yml`](.github/workflows/release.yml) then runs lint and tests, pushes the image to `ghcr.io/andreasawires/orbit-finance` (tags `X.Y.Z`, `X.Y`, and `latest`; `linux/amd64`), builds and smoke-tests the Node tarball, creates the GitHub Release with auto-generated notes and the tarball plus `.sha256`, and deploys GitHub Pages with `latest.json`, `install.sh`, `docker-compose.yml`, and `Caddyfile`.
+Releases are cut by pushing a semver tag. [`.github/workflows/release.yml`](.github/workflows/release.yml) then runs lint and tests, builds the image natively on amd64 and arm64 runners, checks that the native modules and Poppler load in each, and pushes one multi-arch image to `ghcr.io/andreasawires/orbit-finance` (tags `X.Y.Z`, `X.Y`, and `latest`). It also builds and smoke-tests the Node tarballs on `ubuntu-24.04`, `ubuntu-24.04-arm`, and `macos-14`, then creates the GitHub Release with auto-generated notes and the three tarballs, each with its `.sha256`, and deploys GitHub Pages with `latest.json`, `install.sh`, `docker-compose.yml`, and `Caddyfile`.
 
 ```bash
 npm run release:patch   # or release:minor / release:major: bumps package.json, commits, tags vX.Y.Z
@@ -178,7 +196,7 @@ git tag -a v1.0.1 -m "Release v1.0.1" -m "Security: true" -m "Min-Upgrade-From: 
 git push --follow-tags
 ```
 
-Prerelease tags such as `v1.1.0-rc.1` publish an image and a GitHub prerelease, but do not move `latest`, the `X.Y` tag, or the Pages manifest. Pull requests and pushes to `main` run [`.github/workflows/ci.yml`](.github/workflows/ci.yml): lint, tests, build, `shellcheck`, `docker compose config` for every profile combination, and Caddyfile validation.
+Prerelease tags such as `v1.1.0-rc.1` publish an image and a GitHub prerelease, but do not move `latest`, the `X.Y` tag, or the Pages manifest. Pull requests and pushes to `main` run [`.github/workflows/ci.yml`](.github/workflows/ci.yml): tests and build on Linux x64, Linux arm64, and macOS arm64 (lint on x64), an image build on amd64 and arm64 with a native-module check, `shellcheck`, `docker compose config` for every profile combination, and Caddyfile validation.
 
 One-time repository setup: in **Settings → Pages**, set the source to **GitHub Actions**. After the first release, make the `orbit-finance` package public under **Packages → Package settings** so `docker compose pull` works without logging in.
 
@@ -212,3 +230,17 @@ Set `MODEL_TIMEOUT_MS` to control the per-request timeout (five minutes by defau
 All limits can be changed through the variables documented in `.env.example`. Uploaded originals are retained in the local `orbit-import-data` volume for provenance. Database changes are managed by ordered, checksummed migrations; run `npm run db:migrate` after pulling schema changes.
 
 Candidate review is paginated at 100 rows per request, so the CSV acceptance limit does not become one enormous API response or React render. Approval rechecks the batch revision and duplicate fingerprints while holding PostgreSQL locks before it inserts ledger rows.
+
+## License
+
+Orbit Finance is released under the [MIT License](LICENSE). Copyright (c) 2026 Andrea Sawires.
+
+### Third-party software
+
+npm dependencies keep their own licenses. `@firecrawl/pdf-inspector`, Next.js, React, `pg`, and `pg-boss` are MIT-licensed. Two components in the Docker image and the Node.js installs are under other licenses:
+
+- **Poppler** (`poppler-utils`, GPL-2.0 or GPL-3.0) comes from Debian in the Docker image, or from your package manager for Node.js and source installs. Orbit Finance runs `pdftoppm` as a separate program and does not link against it.
+- **libvips** (LGPL-3.0-or-later), used by `sharp`, ships as a prebuilt shared library in the `@img/sharp-libvips-*` packages and is dynamically linked. You can replace it with your own build, as the LGPL allows.
+
+License details: `/usr/share/doc/poppler-utils/copyright` in the image for Poppler, and the Licensing section of `node_modules/@img/sharp-libvips-<platform>/README.md` for libvips and the libraries bundled with it.
+

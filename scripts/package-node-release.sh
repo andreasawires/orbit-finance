@@ -1,17 +1,25 @@
 #!/bin/sh
-# Builds the Node release tarball: dist/orbit-finance-v<version>-linux-x64.tar.gz (+ .sha256).
+# Builds the Node release tarball for the current platform:
+#   dist/orbit-finance-v<version>-<os>-<arch>.tar.gz (+ .sha256)
+# e.g. linux-x64, linux-arm64, darwin-arm64 (the platforms @firecrawl/pdf-inspector and
+# sharp ship native binaries for, and that the release workflow builds on native runners).
 #
-# The tarball contains the production Next.js build, production node_modules, and the
-# TypeScript sources the migrate and worker commands run through tsx. It is built for the
-# platform it is created on (CI uses linux x64, the only platform @firecrawl/pdf-inspector ships
-# a native binary for). Run `npm ci && npm run build` first.
+# The tarball contains the production Next.js build, production node_modules (with only this
+# platform's native binaries), and the TypeScript sources the migrate and worker commands run
+# through tsx. Build each platform on that platform; run `npm ci && npm run build` first.
 set -eu
+# Keep macOS tar from adding AppleDouble (._*) files.
+export COPYFILE_DISABLE=1
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 version=$(node -p 'require("./package.json").version')
-platform="${RELEASE_PLATFORM:-linux-x64}"
+platform=$(node -p 'process.platform + "-" + process.arch')
+case "$platform" in
+  linux-x64|linux-arm64|darwin-arm64) ;;
+  *) echo "Unsupported release platform: $platform (expected linux-x64, linux-arm64, or darwin-arm64)." >&2; exit 1 ;;
+esac
 name="orbit-finance-v${version}-${platform}"
 dist="$root/dist"
 stage="$dist/$name"
@@ -24,7 +32,7 @@ fi
 rm -rf "$stage" "$dist/$name.tar.gz" "$dist/$name.tar.gz.sha256"
 mkdir -p "$stage/scripts" "$stage/database"
 
-cp package.json package-lock.json next.config.ts tsconfig.json "$stage/"
+cp package.json package-lock.json next.config.ts tsconfig.json LICENSE README.md "$stage/"
 cp -R lib workers "$stage/"
 cp scripts/migrate.ts "$stage/scripts/"
 cp -R database/migrations "$stage/database/"

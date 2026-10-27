@@ -22,7 +22,8 @@ LABEL org.opencontainers.image.title="Orbit Finance" \
       org.opencontainers.image.description="Local-first personal finance app backed by PostgreSQL." \
       org.opencontainers.image.source="https://github.com/andreasawires/orbit-finance" \
       org.opencontainers.image.url="https://github.com/andreasawires/orbit-finance" \
-      org.opencontainers.image.version="${ORBIT_VERSION}"
+      org.opencontainers.image.version="${ORBIT_VERSION}" \
+      org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

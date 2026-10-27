@@ -222,7 +222,6 @@ DATABASE_URL=$4
 WEB_PORT=3000
 WEB_BIND_ADDRESS=$( [ "$5" = "yes" ] && echo 127.0.0.1 || echo 0.0.0.0 )
 ORBIT_DOMAIN=$6
-APP_PLATFORM=linux/amd64
 
 # Daily check of ${PAGES_URL}/latest.json (a plain GET, nothing identifying is sent).
 UPDATE_CHECK=true
@@ -276,23 +275,63 @@ install_docker() {
   fi
   say "  Config: ${env_file} (set MODEL_* there for statement imports, then: cd ${install_dir} && docker compose up -d)."
   say "  Update: curl -fsSL ${PAGES_URL}/install.sh | sh -s -- update"
-  if [ "$(uname -m 2>/dev/null)" = "arm64" ] || [ "$(uname -m 2>/dev/null)" = "aarch64" ]; then
-    warn "The image is linux/amd64 only; on ARM hosts it runs under emulation and is slower."
+}
+
+# node_platform -> linux-x64 | linux-arm64 | darwin-arm64, or exits with a clear message.
+node_platform() {
+  _os=$(host_os); _arch=$(uname -m 2>/dev/null || echo unknown)
+  case "$_os" in
+    Darwin)
+      # A Rosetta shell reports x86_64 on Apple Silicon; ask the kernel for the real CPU.
+      if [ "$_arch" = "x86_64" ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ]; then _arch=arm64; fi
+      case "$_arch" in
+        arm64) echo darwin-arm64 ;;
+        *) die "There is no Node release for Intel Macs (the native PDF library has no darwin-x64 build). Use the Docker install instead." ;;
+      esac ;;
+    Linux)
+      if ls /lib/ld-musl-* >/dev/null 2>&1; then
+        die "The Node releases are built for glibc Linux; this system uses musl (e.g. Alpine). Use the Docker install instead."
+      fi
+      case "$_arch" in
+        x86_64|amd64) echo linux-x64 ;;
+        aarch64|arm64) echo linux-arm64 ;;
+        *) die "There is no Node release for Linux ${_arch}. Use Docker (amd64/arm64) or run from source." ;;
+      esac ;;
+    *) die "There is no Node release for ${_os}. Use Docker, or run from source." ;;
+  esac
+}
+
+poppler_hint() {
+  case "$(host_os)" in
+    Darwin) say "  macOS:          brew install poppler" ;;
+    *) say "  Debian/Ubuntu:  sudo apt-get install poppler-utils"
+       say "  Fedora/RHEL:    sudo dnf install poppler-utils"
+       say "  Arch:           sudo pacman -S poppler" ;;
+  esac
+}
+
+require_poppler() {
+  # pdftoppm renders the PDF pages that need visual reading during imports.
+  if ! have pdftoppm; then
+    say "Poppler (pdftoppm) is required to import scanned PDF pages. Install it with:" >&2
+    poppler_hint >&2
+    die "pdftoppm not found on PATH."
   fi
 }
 
 install_node_release() {
   # install_node_release VERSION -> extracts into releases/ and repoints current
-  case "$(host_os)-$(uname -m 2>/dev/null)" in
-    Linux-x86_64|Linux-amd64) ;;
-    *) die "The Node release is built for Linux x64 only (native PDF dependency). Use Docker, or run from source." ;;
-  esac
+  _platform=$(node_platform)
   have node || die "Node.js ${MIN_NODE}+ is required."
   _node=$(node -p 'process.versions.node')
   version_lt "$_node" "$MIN_NODE" && die "Node.js ${MIN_NODE}+ is required (found ${_node})."
   have npm || die "npm is required."
+  _node_platform=$(node -p 'process.platform + "-" + process.arch')
+  if [ "$_node_platform" != "$_platform" ]; then
+    die "This is a ${_platform} machine but node is a ${_node_platform} build. Install a native ${_platform} Node.js ${MIN_NODE}+."
+  fi
 
-  _name="orbit-finance-v$1-linux-x64"
+  _name="orbit-finance-v$1-${_platform}"
   make_tmp
   info "Downloading ${_name}.tar.gz"
   download "${RELEASES_URL}/v$1/${_name}.tar.gz" "$tmp_dir/${_name}.tar.gz" || die "Could not download the v$1 release."
@@ -321,6 +360,17 @@ Run it (each in its own terminal, from ${_dir}):
   npm run db:migrate     # apply database migrations (after every install or update)
   npm start              # web UI on http://localhost:3000 (PORT=8080 npm start to change)
   npm run worker         # statement import worker
+TXT
+  if [ "$(host_os)" = "Darwin" ]; then
+    cat <<TXT
+
+On macOS, keep them running with a launchd agent, a process manager such as pm2,
+or simply in terminal tabs. Put any reverse proxy (Caddy, nginx) in front of
+port 3000 for HTTPS.
+TXT
+    return 0
+  fi
+  cat <<TXT
 
 Example systemd units (/etc/systemd/system/orbit-finance-web.service and -worker.service):
 
@@ -349,6 +399,8 @@ TXT
 
 install_node() {
   db_mode=""
+  node_platform >/dev/null
+  require_poppler
   ask_choice db_mode "Database: bundled Postgres container (needs Docker), or your own server" "${ORBIT_DB:-external}" bundled external
   database_url=""
   if [ "$db_mode" = "external" ]; then
@@ -423,6 +475,7 @@ do_update() {
       info "Updated to v${version}."
       ;;
     node)
+      have pdftoppm || { warn "pdftoppm (Poppler) is missing; scanned PDF pages cannot be imported until you install it:"; poppler_hint; }
       install_node_release "$version"
       env_set ORBIT_VERSION "$version"
       if [ -n "$(env_get COMPOSE_PROFILES)" ] && have docker; then fetch_compose_files; compose up -d database; fi

@@ -1,8 +1,9 @@
 name: Release
 
 # Push a tag like v1.2.0 (see README "Releasing"). Builds and publishes:
-#   - ghcr.io/andreasawires/orbit-finance:<version>, :<major>.<minor>, :latest (linux/amd64)
-#   - a GitHub Release with auto-generated notes, the Node tarball, and its sha256
+#   - ghcr.io/andreasawires/orbit-finance:<version>, :<major>.<minor>, :latest (linux/amd64 + linux/arm64)
+#   - a GitHub Release with auto-generated notes and Node tarballs (linux-x64, linux-arm64,
+#     darwin-arm64), each with its sha256
 #   - the GitHub Pages site with latest.json, install.sh, docker-compose.yml, and Caddyfile
 # Prerelease tags (v1.2.0-rc.1) publish the image and a prerelease, but never update latest or Pages.
 
@@ -64,14 +65,79 @@ jobs:
       - run: npm run lint
       - run: npm test
 
+  # Each architecture builds natively (no QEMU) and pushes by digest; image-manifest
+  # then joins the digests into one multi-arch tag set.
   image:
     needs: verify
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: labels
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.licenses=MIT
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          build-args: ORBIT_VERSION=${{ needs.verify.outputs.version }}
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Check native modules load in the image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" "${IMAGE}@${DIGEST}" \
+            node -e 'require("@firecrawl/pdf-inspector"); require("sharp"); console.log(process.arch, "native modules OK")'
+          docker run --rm --platform "${{ matrix.platform }}" "${IMAGE}@${DIGEST}" pdftoppm -v
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  image-manifest:
+    needs: [verify, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -88,22 +154,29 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           flavor: |
             latest=auto
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: runtime
-          # @firecrawl/pdf-inspector only ships a linux x64 native binary.
-          platforms: linux/amd64
-          push: true
-          build-args: ORBIT_VERSION=${{ needs.verify.outputs.version }}
-          tags: ${{ steps.tags.outputs.tags }}
-          labels: ${{ steps.tags.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          # shellcheck disable=SC2046 # one -t flag per tag, one source per digest
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+      - name: Inspect
+        run: docker buildx imagetools inspect "${IMAGE}:${{ steps.tags.outputs.version }}"
 
   node-tarball:
     needs: verify
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -114,29 +187,35 @@ jobs:
       - run: npm run build
       - run: npm run package:node
       - name: Smoke-test the tarball
+        shell: bash
         run: |
-          (cd dist && sha256sum -c ./*.sha256)
-          mkdir -p /tmp/smoke
-          tar -xzf dist/orbit-finance-v*-linux-x64.tar.gz -C /tmp/smoke
-          cd /tmp/smoke/orbit-finance-v*-linux-x64
+          set -euo pipefail
+          name="orbit-finance-v${{ needs.verify.outputs.version }}-${{ matrix.platform }}"
+          test -f "dist/${name}.tar.gz" || { echo "::error::dist/${name}.tar.gz was not produced"; ls dist; exit 1; }
+          (cd dist && shasum -a 256 -c "${name}.tar.gz.sha256")
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -xzf "dist/${name}.tar.gz" -C "$RUNNER_TEMP/smoke"
+          cd "$RUNNER_TEMP/smoke/${name}"
+          node -e 'require("@firecrawl/pdf-inspector"); require("sharp"); console.log(process.platform, process.arch, "native modules OK")'
           node --import tsx -e 'import("pg-boss").then(() => console.log("worker dependencies load"))'
           UPDATE_CHECK=false npx next start -p 3999 > server.log 2>&1 &
+          server=$!
           ok=false
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3999/api/update-status; then ok=true; break; fi
             sleep 1
           done
-          kill %1 || true
+          kill "$server" || true
           cat server.log
           [ "$ok" = true ]
       - uses: actions/upload-artifact@v4
         with:
-          name: node-tarball
+          name: node-tarball-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
 
   release:
-    needs: [verify, image, node-tarball]
+    needs: [verify, image-manifest, node-tarball]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,8 +223,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: node-tarball
+          pattern: node-tarball-*
           path: dist
+          merge-multiple: true
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

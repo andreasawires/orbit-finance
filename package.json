@@ -2,6 +2,7 @@
   "name": "orbit-finance",
   "version": "1.0.0",
   "description": "Local-first personal finance app: accounts, transactions, cost centers, reports, and AI-assisted statement imports on your own PostgreSQL.",
+  "license": "MIT",
   "keywords": [
     "finance",
     "personal-finance",
@@ -39,7 +40,7 @@
     "package:node": "sh scripts/package-node-release.sh"
   },
   "dependencies": {
-    "@firecrawl/pdf-inspector": "^1.11.2",
+    "@firecrawl/pdf-inspector": "^1.25.2",
     "csv-parse": "^7.0.3",
     "lucide-react": "^0.468.0",
     "next": "^16.2.12",
