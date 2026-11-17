@@ -1,4 +1,5 @@
 import type { FxRateMap } from "@/lib/currency-summary";
+import { fetchBtcUsdPrice } from "@/lib/btc/mempool";
 
 const currencyCode = /^[A-Z]{3}$/;
 const frankfurterUrl = "https://api.frankfurter.dev/v2/rates";
@@ -13,8 +14,11 @@ type FrankfurterRate = {
 export type LatestFxRates = {
   targetCurrency: string;
   rates: FxRateMap;
-  providerLabel: "Frankfurter Central Bank Rates";
+  providerLabel: string;
 };
+
+const frankfurterLabel = "Frankfurter Central Bank Rates";
+const btcLabel = "Frankfurter Central Bank Rates + mempool.space BTC price";
 
 export function normalizeCurrencyCode(value: string) {
   const code = value.trim().toUpperCase();
@@ -39,18 +43,46 @@ export function normalizeFrankfurterRates(targetCurrency: string, sourceCurrenci
     if (!Number.isFinite(value) || value <= 0 || !date) throw new Error(`Frankfurter did not return a current rate for ${sourceCurrency}.`);
     rates[sourceCurrency] = { rate: 1 / value, date };
   }
-  return { targetCurrency: target, rates, providerLabel: "Frankfurter Central Bank Rates" };
+  return { targetCurrency: target, rates, providerLabel: frankfurterLabel };
 }
 
-export async function loadLatestFxRates(targetCurrency: string, sourceCurrencies: string[], fetcher: typeof fetch = fetch): Promise<LatestFxRates> {
-  const target = normalizeCurrencyCode(targetCurrency);
-  const sources = normalizeCurrencyCodes(sourceCurrencies);
+async function loadFrankfurterRates(target: string, sources: string[], fetcher: typeof fetch): Promise<LatestFxRates> {
   const quotes = sources.filter((currency) => currency !== target);
-  if (!quotes.length) return { targetCurrency: target, rates: {}, providerLabel: "Frankfurter Central Bank Rates" };
+  if (!quotes.length) return { targetCurrency: target, rates: {}, providerLabel: frankfurterLabel };
   const url = new URL(frankfurterUrl);
   url.searchParams.set("base", target);
   url.searchParams.set("quotes", quotes.join(","));
   const response = await fetcher(url, { cache: "no-store", headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error("Frankfurter Central Bank Rates are temporarily unavailable.");
-  return normalizeFrankfurterRates(target, sources, await response.json());
+  return normalizeFrankfurterRates(target, quotes, await response.json());
+}
+
+/**
+ * Central bank rates do not cover BTC, so BTC goes through USD: mempool.space gives BTC→USD and
+ * Frankfurter gives USD→target (or source→USD when BTC itself is the target).
+ */
+export async function loadLatestFxRates(targetCurrency: string, sourceCurrencies: string[], fetcher: typeof fetch = fetch): Promise<LatestFxRates> {
+  const target = normalizeCurrencyCode(targetCurrency);
+  const quotes = normalizeCurrencyCodes(sourceCurrencies).filter((currency) => currency !== target);
+  if (target !== "BTC" && !quotes.includes("BTC")) return loadFrankfurterRates(target, quotes, fetcher);
+  if (!quotes.length) return { targetCurrency: target, rates: {}, providerLabel: btcLabel };
+  const fiatQuotes = quotes.filter((currency) => currency !== "BTC");
+  const btc = await fetchBtcUsdPrice(fetcher);
+
+  if (target === "BTC") {
+    // Rates in USD per source unit, then divided by the USD price of one BTC.
+    const usd = await loadFrankfurterRates("USD", fiatQuotes, fetcher);
+    const rates: FxRateMap = {};
+    for (const source of fiatQuotes) {
+      const perUsd = source === "USD" ? { rate: 1, date: btc.date } : usd.rates[source];
+      rates[source] = { rate: perUsd.rate / btc.usd, date: perUsd.date < btc.date ? perUsd.date : btc.date };
+    }
+    return { targetCurrency: target, rates, providerLabel: btcLabel };
+  }
+
+  const fiat = await loadFrankfurterRates(target, [...new Set([...fiatQuotes, "USD"])], fetcher);
+  const usdToTarget = target === "USD" ? { rate: 1, date: btc.date } : fiat.rates.USD;
+  const rates: FxRateMap = Object.fromEntries(fiatQuotes.map((source) => [source, fiat.rates[source]]));
+  rates.BTC = { rate: btc.usd * usdToTarget.rate, date: btc.date };
+  return { targetCurrency: target, rates, providerLabel: btcLabel };
 }

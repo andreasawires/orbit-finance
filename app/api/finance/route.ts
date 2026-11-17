@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assignCostCenter, createAccount, createCostCenter, createCurrency, createTransaction, createTransactions, deleteAccount, deleteAllData, deleteCostCenter, deleteCurrency, deleteTransaction, getFinanceData, linkTransactionsAsTransfer, savePreferences, updateAccount, updateCurrency, updateTransaction } from "@/lib/db";
 import { apiFailure } from "@/lib/api-failure";
+import { createBtcWallet } from "@/lib/btc/wallet-sync";
 import { requireRequestWorkspace } from "@/lib/workspace-request";
 
 export async function GET(request: NextRequest) {
@@ -15,6 +16,7 @@ export async function POST(request: NextRequest) {
     const workspace = await requireRequestWorkspace(request);
     const { resource, data } = await request.json();
     if (resource === "account") await createAccount(workspace.id, data);
+    else if (resource === "btcWallet") await createBtcWallet(workspace.id, data ?? {});
     else if (resource === "transaction") await createTransaction(workspace.id, data);
     else if (resource === "transactions") await createTransactions(workspace.id, Array.isArray(data?.items) ? data.items : []);
     else if (resource === "costCenter") await createCostCenter(workspace.id, data);

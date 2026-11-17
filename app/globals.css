@@ -730,3 +730,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 @media (max-width: 540px) {
   .pagination { flex-wrap: wrap; justify-content: center; }
 }
+
+.wallet-address { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }

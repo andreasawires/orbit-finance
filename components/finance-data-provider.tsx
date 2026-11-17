@@ -13,7 +13,11 @@ type FinanceDataContextValue = {
   revision: number;
   refresh: () => Promise<void>;
   mutate: (method: "POST" | "PATCH" | "DELETE", body: unknown) => Promise<FinanceData>;
+  /** Pulls new on-chain transactions for one or all Bitcoin wallets; the server throttles unless `force`. */
+  syncWallets: (body?: { accountId?: string; force?: boolean }) => Promise<WalletSyncResult[]>;
 };
+
+export type WalletSyncResult = { accountId: string; status: "synced" | "skipped" | "failed"; imported: number; error?: string };
 
 const FinanceDataContext = createContext<FinanceDataContextValue | null>(null);
 
@@ -82,10 +86,21 @@ export function FinanceDataProvider({ children }: { children: React.ReactNode })
     return result as FinanceData;
   }, [store, workspaceFetch, workspaceId]);
 
+  const syncWallets = useCallback(async (body: { accountId?: string; force?: boolean } = {}) => {
+    const id = workspaceId ?? "";
+    const seq = ++sequence.current;
+    const response = await workspaceFetch("/api/wallets/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not sync wallets");
+    store(id, seq, result.finance);
+    if ((result.results as WalletSyncResult[]).some((item) => item.imported > 0)) setRevision((current) => current + 1);
+    return result.results as WalletSyncResult[];
+  }, [store, workspaceFetch, workspaceId]);
+
   const cached = workspaceId ? cache[workspaceId] : undefined;
   const error = workspaceId ? errors[workspaceId] ?? "" : "";
-  const value = useMemo(() => ({ data: cached ?? emptyFinanceData, loading: !cached && !error, refreshing, error, revision, refresh, mutate }),
-    [cached, error, refreshing, revision, refresh, mutate]);
+  const value = useMemo(() => ({ data: cached ?? emptyFinanceData, loading: !cached && !error, refreshing, error, revision, refresh, mutate, syncWallets }),
+    [cached, error, refreshing, revision, refresh, mutate, syncWallets]);
   return <FinanceDataContext.Provider value={value}>{children}</FinanceDataContext.Provider>;
 }
 
