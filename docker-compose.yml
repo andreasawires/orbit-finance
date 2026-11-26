@@ -1,13 +1,30 @@
-x-app-build: &app-build
-  image: orbit-finance-app:local
-  # pdf-inspector currently publishes a Linux x64 native binary, not Linux arm64.
-  platform: ${APP_PLATFORM:-linux/amd64}
-  build:
-    context: .
-    target: runtime
+# Orbit Finance — one Compose file, three ways to run it (see README "Install"):
+#
+#   docker compose --profile db --profile proxy up -d   # app + bundled Postgres + Caddy (HTTPS)
+#   docker compose --profile db up -d                   # app + bundled Postgres
+#   docker compose up -d                                # app only; set DATABASE_URL to your Postgres
+#
+# Profiles can also be set once in .env with COMPOSE_PROFILES=db,proxy (the installer does this).
+# To build the image from this checkout instead of pulling it, add the build override:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml --profile db up -d --build
+
+x-app: &app
+  image: ghcr.io/andreasawires/orbit-finance:${ORBIT_VERSION:-latest}
+  # The image is published for linux/amd64 and linux/arm64; Docker picks the
+  # host's architecture. Set APP_PLATFORM (e.g. linux/amd64) only to force one.
+  platform: ${APP_PLATFORM:-}
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 x-app-environment: &app-environment
-  DATABASE_URL: ${DATABASE_URL:-postgresql://orbit:orbit@database:5432/orbit_finance}
+  # Bundled Postgres (profile "db"): host `database`, port 5432. Otherwise point this at your own server.
+  DATABASE_URL: ${DATABASE_URL:-postgresql://orbit:${POSTGRES_PASSWORD:-orbit}@database:5432/orbit_finance}
+  INSTALL_METHOD: ${INSTALL_METHOD:-docker}
+  UPDATE_CHECK: ${UPDATE_CHECK:-true}
+  UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-https://andreasawires.github.io/orbit-finance/latest.json}
   IMPORT_STORAGE_PATH: /app/data/imports
   IMPORT_MAX_PDF_MB: ${IMPORT_MAX_PDF_MB:-25}
   IMPORT_MAX_PDF_PAGES: ${IMPORT_MAX_PDF_PAGES:-50}
@@ -23,10 +40,14 @@ x-app-environment: &app-environment
   MODEL_STRUCTURED_OUTPUT: ${MODEL_STRUCTURED_OUTPUT:-auto}
   MODEL_TIMEOUT_MS: ${MODEL_TIMEOUT_MS:-300000}
   MODEL_MAX_INPUT_CHARS: ${MODEL_MAX_INPUT_CHARS:-24000}
+  MODEL_REASONING: ${MODEL_REASONING:-provider}
+  MODEL_BATCH_CHARS: ${MODEL_BATCH_CHARS:-12000}
+  MODEL_CONCURRENCY: ${MODEL_CONCURRENCY:-4}
   MODEL_ALLOW_REMOTE: ${MODEL_ALLOW_REMOTE:-false}
 
 services:
   database:
+    profiles: ["db"]
     image: postgres:17-bookworm
     restart: unless-stopped
     environment:
@@ -45,36 +66,34 @@ services:
       start_period: 5s
 
   migrate:
-    <<: *app-build
+    <<: *app
     command: ["npm", "run", "db:migrate"]
-    init: true
     restart: "no"
     environment:
       <<: *app-environment
     depends_on:
+      # Only waited for when the "db" profile is enabled (needs Docker Compose v2.20+).
       database:
         condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+        required: false
 
   web:
-    <<: *app-build
+    <<: *app
     command: ["npm", "run", "start:docker"]
-    init: true
     restart: unless-stopped
     environment:
       <<: *app-environment
     ports:
       # Web UI is reachable from the local network by default. Set
-      # WEB_BIND_ADDRESS=127.0.0.1 to restrict it to this machine.
+      # WEB_BIND_ADDRESS=127.0.0.1 to restrict it to this machine (the installer
+      # does this when Caddy is enabled, so only Caddy is exposed publicly).
       - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-3000}:3000"
     volumes:
       - orbit-import-data:/app/data/imports
     depends_on:
       database:
         condition: service_healthy
+        required: false
       migrate:
         condition: service_completed_successfully
     healthcheck:
@@ -89,15 +108,10 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
 
   import-worker:
-    <<: *app-build
+    <<: *app
     command: ["npm", "run", "worker"]
-    init: true
     restart: unless-stopped
     environment:
       <<: *app-environment
@@ -109,13 +123,36 @@ services:
     depends_on:
       database:
         condition: service_healthy
+        required: false
       migrate:
         condition: service_completed_successfully
+
+  caddy:
+    profiles: ["proxy"]
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      ORBIT_DOMAIN: ${ORBIT_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - orbit-caddy-data:/data
+      - orbit-caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
 
 volumes:
   orbit-postgres-data:
   orbit-import-data:
+  orbit-caddy-data:
+  orbit-caddy-config:

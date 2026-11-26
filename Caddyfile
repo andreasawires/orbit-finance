@@ -1,0 +1,15 @@
+# Reverse proxy for the "proxy" Compose profile. Caddy obtains and renews a TLS
+# certificate for ORBIT_DOMAIN automatically; the domain's DNS must point at this
+# host and ports 80/443 must be reachable from the internet.
+{$ORBIT_DOMAIN:localhost} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	reverse_proxy web:3000
+}

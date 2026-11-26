@@ -12,3 +12,5 @@ data
 coverage
 out
 *.tsbuildinfo
+dist
+backups

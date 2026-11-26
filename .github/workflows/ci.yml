@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Every platform with a Docker image or Node release, so a missing native
+    # binary (pdf-inspector, sharp) fails here instead of at release time.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+        if: matrix.runner == 'ubuntu-24.04'
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  packaging:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -s sh install.sh scripts/*.sh
+      - name: Validate Compose profiles
+        run: |
+          # shellcheck disable=SC2086 # $profiles is intentionally split into arguments
+          for profiles in "" "--profile db" "--profile proxy" "--profile db --profile proxy"; do
+            echo "::group::docker compose $profiles config"
+            docker compose $profiles config --quiet
+            docker compose -f docker-compose.yml -f docker-compose.build.yml $profiles config --quiet
+            echo "::endgroup::"
+          done
+      - name: Validate Caddyfile
+        run: docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" -e ORBIT_DOMAIN=orbit.example.com caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: orbit-finance:ci
+          cache-from: type=gha,scope=ci-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=ci-${{ matrix.platform }}
+      - name: Native modules and Poppler load in the image
+        run: |
+          docker run --rm orbit-finance:ci node -e 'require("@firecrawl/pdf-inspector"); require("sharp"); console.log(process.arch, "native modules OK")'
+          docker run --rm orbit-finance:ci pdftoppm -v
