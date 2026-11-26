@@ -8,6 +8,8 @@ export function apiFailure(error: unknown) {
   const workspace = workspaceRequestFailure(error);
   if (workspace.status !== 503) return NextResponse.json({ error: workspace.message }, { status: workspace.status });
   if (/not found/i.test(message)) return NextResponse.json({ error: message }, { status: 404 });
+  if (/valid Bitcoin|rejected this Bitcoin address|already added to this workspace|Add BTC in Settings|synced from the blockchain|Account name is required/i.test(message)) return NextResponse.json({ error: message }, { status: 400 });
+  if (/blockchain data is temporarily unavailable/i.test(message)) return NextResponse.json({ error: message }, { status: 502 });
   if (/confirmation does not match|valid timezone|must be an ISO timestamp|is invalid\.|must be greater than zero|Choose both|two different accounts|at least one transaction|^Invalid (date range|type filter|account filter|cost center filter|sort|page|granularity|transaction or account id)/i.test(message)) return NextResponse.json({ error: message }, { status: 400 });
   return NextResponse.json({ error: `Database unavailable: ${message}` }, { status: 503 });
 }

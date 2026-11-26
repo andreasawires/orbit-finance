@@ -41,14 +41,36 @@ export function Modal({ open, onClose, title, subtitle, children, action = "Save
   );
 }
 
+export const WALLET_ACCOUNT_KIND = "Crypto wallet";
+
+const accountColorField = (account: Account | null | undefined, colors = ["#573cf0", "#0e8a69", "#db6e30", "#267baf", "#d94e6b"]) =>
+  <fieldset className="full color-field"><legend>Account color</legend><div className="color-options">{colors.map((c, i) => <label key={c}><input type="radio" name="color" value={c} defaultChecked={account ? account.color === c : !i} /><span style={{ background: c }}>{(!account && !i) || account?.color === c ? <Check size={14} /> : null}</span></label>)}</div></fieldset>;
+
 export function AccountForm({ account, currencies = [] }: { account?: Account | null; currencies?: Currency[] }) {
+  const [kind, setKind] = useState(account?.kind ?? "Checking");
+  if (account?.wallet) return <div className="form-grid">
+    <label className="full">Account name<input name="name" defaultValue={account.name} required /></label>
+    <label className="full">Bitcoin address<span className="locked-currency"><strong className="wallet-address">{account.wallet.address}</strong><small>Transactions and balance are synced from the blockchain.</small></span></label>
+    {accountColorField(account)}
+  </div>;
+  if (!account && kind === WALLET_ACCOUNT_KIND) {
+    const hasBtc = currencies.some((currency) => currency.code === "BTC");
+    return <div className="form-grid">
+      <label className="full">Account name<input name="name" placeholder="e.g. Cold storage" required /></label>
+      <label>Account type<select name="kind" value={kind} onChange={(event) => setKind(event.target.value)}><option>Checking</option><option>Savings</option><option>Credit card</option><option>Investment</option><option>{WALLET_ACCOUNT_KIND}</option></select></label>
+      <label>Currency<span className="locked-currency"><strong>BTC</strong><small>Bitcoin wallets always use BTC.</small></span><input type="hidden" name="currency" value="BTC" /></label>
+      {!hasBtc && <div className="full form-hint"><strong>BTC is not in this workspace&apos;s currencies</strong><span>Add it in Settings → Currencies (code BTC) first.</span></div>}
+      <label className="full">Bitcoin address<input name="address" placeholder="bc1…, 1… or 3…" autoComplete="off" spellCheck={false} required /><small>Imports the latest 200 confirmed transactions, then syncs whenever you open Accounts.</small></label>
+      {accountColorField(null, ["#db6e30", "#573cf0", "#0e8a69", "#267baf", "#d94e6b"])}
+    </div>;
+  }
   return <div className="form-grid">
     <label className="full">Account name<input name="name" defaultValue={account?.name} placeholder="e.g. Everyday account" required /></label>
     <label>Institution<input name="institution" defaultValue={account?.institution} placeholder="Bank or institution" /></label>
-    <label>Account type<select name="kind" defaultValue={account?.kind ?? "Checking"}><option>Checking</option><option>Savings</option><option>Credit card</option><option>Investment</option></select></label>
+    <label>Account type<select name="kind" value={kind} onChange={(event) => setKind(event.target.value)}><option>Checking</option><option>Savings</option><option>Credit card</option><option>Investment</option>{!account && <option>{WALLET_ACCOUNT_KIND}</option>}</select></label>
     <label>Opening balance<input name={account ? "openingBalance" : "startingBalance"} defaultValue={account?.openingBalance} type="number" step="0.01" placeholder="0.00" required /></label>
     {account ? <label>Currency<span className="locked-currency"><strong>{account.currency}</strong><small>Locked after creation. Create a new account to use another currency.</small></span></label> : <label>Currency<select name="currency" defaultValue={currencies[0]?.code ?? "USD"} required>{currencies.length ? currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.name}</option>) : <option value="USD">USD</option>}</select></label>}
-    <fieldset className="full color-field"><legend>Account color</legend><div className="color-options">{["#573cf0", "#0e8a69", "#db6e30", "#267baf", "#d94e6b"].map((c, i) => <label key={c}><input type="radio" name="color" value={c} defaultChecked={account ? account.color === c : !i} /><span style={{ background: c }}>{(!account && !i) || account?.color === c ? <Check size={14} /> : null}</span></label>)}</div></fieldset>
+    {accountColorField(account)}
   </div>;
 }
 
@@ -60,7 +82,9 @@ function marketComparison(applied: number, market: number) {
   return Math.abs(difference) < 0.05 ? "At the market rate" : `${Math.abs(difference).toFixed(1)}% ${difference < 0 ? "below" : "above"} the market rate`;
 }
 
-export function TransactionForm({ accounts, costCenters, currencies, transaction, locale = "en-US", timeZone = "UTC", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transaction?: Transaction | null; locale?: string; timeZone?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
+export function TransactionForm({ accounts: allAccounts, costCenters, currencies, transaction, locale = "en-US", timeZone = "UTC", onTransferLinkModeChange }: { accounts: Account[]; costCenters: CostCenter[]; currencies: Currency[]; transaction?: Transaction | null; locale?: string; timeZone?: string; onTransferLinkModeChange?: (active: boolean) => void }) {
+  // Wallet ledgers come from the blockchain; a synced entry can still be opened to edit its description, note or cost center.
+  const accounts = allAccounts.filter((item) => !item.wallet || item.id === transaction?.accountId);
   const [type, setType] = useState<Transaction["type"]>(transaction?.type ?? "Expense");
   const initialSourceAccountId = transaction?.type === "Transfer" && transaction.amount > 0 ? transaction.transferAccountId ?? "" : transaction?.accountId ?? accounts[0]?.id ?? "";
   const initialDestinationAccountId = transaction?.type === "Transfer" && transaction.amount < 0 ? transaction.transferAccountId ?? "" : transaction?.type === "Transfer" ? transaction?.accountId ?? "" : accounts.find((account) => account.id !== initialSourceAccountId)?.id ?? "";
@@ -109,7 +133,7 @@ export function TransactionForm({ accounts, costCenters, currencies, transaction
       })}</select></label> : <div className="full form-hint"><strong>No matching transactions found</strong><span>Choose another account or create a new transfer instead.</span></div>)}
     </> : <>
       <label className="full">Description<input name="description" defaultValue={transaction?.merchant} placeholder="What was this for?" required /></label>
-      <label><span className="amount-label">{crossCurrency ? "Sent" : "Amount"}<small>{currencyLabel}</small></span><input name="amount" value={sent} onChange={(event) => setSent(event.target.value)} type="number" min="0" step="0.01" placeholder="0.00" required /></label>
+      <label><span className="amount-label">{crossCurrency ? "Sent" : "Amount"}<small>{currencyLabel}</small></span><input name="amount" value={sent} onChange={(event) => setSent(event.target.value)} type="number" min="0" step={account?.currency === "BTC" ? "any" : "0.01"} placeholder="0.00" required readOnly={!!account?.wallet} /></label>
       <label>Date<input type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} required /><input type="hidden" name="occurredAt" value={occurredAt} /></label>
       <label>{isTransfer ? "From account" : "Account"}<select name="accountId" value={accountId} onChange={(event) => setAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label>
       {isTransfer ? <label>To account<select name="transferAccountId" value={transferAccountId} onChange={(event) => setTransferAccountId(event.target.value)} required><option value="" disabled>Select an account</option>{accounts.filter((account) => account.id !== accountId).map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}</select></label> : <label>Cost center<select name="costCenterId" defaultValue={transaction?.costCenterId ?? ""}><option value="">Uncategorized</option>{centers.map((center) => <option value={center.id} key={center.id}>{center.path}</option>)}</select></label>}
@@ -129,7 +153,8 @@ type BatchRow = { key: number; type: Transaction["type"]; description: string; a
 const firstOtherAccountId = (accounts: Account[], accountId: string) => accounts.find((account) => account.id !== accountId)?.id ?? "";
 
 // Creates several transactions in one submit. Rows are controlled; the form posts them as one JSON field named "batch".
-export function BatchTransactionForm({ accounts, costCenters, timeZone = "UTC", onCountChange }: { accounts: Account[]; costCenters: CostCenter[]; timeZone?: string; onCountChange?: (count: number) => void }) {
+export function BatchTransactionForm({ accounts: allAccounts, costCenters, timeZone = "UTC", onCountChange }: { accounts: Account[]; costCenters: CostCenter[]; timeZone?: string; onCountChange?: (count: number) => void }) {
+  const accounts = allAccounts.filter((account) => !account.wallet);
   const centers = flattenCostCenters(costCenters);
   const nextKey = useRef(1);
   const focusKey = useRef<number | null>(null);

@@ -743,3 +743,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monos
 .update-banner-command button { border: 0; background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; padding: 3px; }
 .update-banner .icon-button { width: 30px; height: 30px; }
 @media (max-width: 720px) { .update-banner { flex-wrap: wrap; } }
+
+.wallet-address { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }

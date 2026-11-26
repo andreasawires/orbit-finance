@@ -14,6 +14,8 @@ export type Account = {
   kind: string;
   transactionCount: number;
   transferCount: number;
+  /** Set for Bitcoin wallet accounts, whose transactions are synced from the blockchain. */
+  wallet: { address: string; lastSyncedAt: string | null; lastSyncError: string | null } | null;
 };
 
 export type Transaction = {
@@ -126,8 +128,11 @@ export type FinanceReport = {
   currencies: ReportCurrencyView[];
 };
 
+/** BTC is not in ISO 4217, so Intl knows no precision for it; wallets need satoshis (8 decimals). */
+const maximumFractionDigitsFor = (currency: string) => currency === "BTC" ? 8 : undefined;
+
 export const formatMoney = (value: number, currency = "USD", locale = "en-US") =>
-  new Intl.NumberFormat(locale, { style: "currency", currency, minimumFractionDigits: 2 }).format(value);
+  new Intl.NumberFormat(locale, { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: maximumFractionDigitsFor(currency) }).format(value);
 
 export const flattenCostCenters = (centers: CostCenter[], prefix = ""): Array<CostCenter & { path: string }> =>
   centers.flatMap((center) => {

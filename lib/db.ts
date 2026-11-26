@@ -47,6 +47,11 @@ const accountFromRow = (row: Row): Account => ({
   kind: String(row.kind),
   transactionCount: Number(row.transaction_count ?? 0),
   transferCount: Number(row.transfer_count ?? 0),
+  wallet: row.wallet_address ? {
+    address: String(row.wallet_address),
+    lastSyncedAt: row.wallet_last_synced_at ? isoInstant(row.wallet_last_synced_at) : null,
+    lastSyncError: row.wallet_last_sync_error ? String(row.wallet_last_sync_error) : null,
+  } : null,
 });
 
 const isoInstant = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
@@ -117,8 +122,10 @@ export async function getFinanceData(workspaceId: string): Promise<FinanceData> 
   const [workspaceResult, accountsResult, centersResult, spendResult, currenciesResult, preferencesResult] = await Promise.all([
     db.query("SELECT * FROM workspaces WHERE id = $1 AND archived_at IS NULL", [workspaceId]),
     db.query(`SELECT a.*, a.opening_balance + COALESCE(transaction_totals.amount, 0) AS balance,
-        COALESCE(transaction_totals.transaction_count, 0) AS transaction_count, COALESCE(transaction_totals.transfer_count, 0) AS transfer_count
+        COALESCE(transaction_totals.transaction_count, 0) AS transaction_count, COALESCE(transaction_totals.transfer_count, 0) AS transfer_count,
+        w.address AS wallet_address, w.last_synced_at AS wallet_last_synced_at, w.last_sync_error AS wallet_last_sync_error
       FROM accounts a
+      LEFT JOIN crypto_wallets w ON w.account_id = a.id
       LEFT JOIN (
         SELECT account_id, SUM(amount) AS amount, COUNT(*)::int AS transaction_count, COUNT(transfer_id)::int AS transfer_count
         FROM transactions WHERE workspace_id = $1 GROUP BY account_id
@@ -187,9 +194,15 @@ export async function createAccount(workspaceId: string, input: Record<string, u
 
 export async function updateAccount(workspaceId: string, id: string, input: Record<string, unknown>) {
   await ensureDatabaseSchema();
-  const existing = await db.query<{ currency: string }>("SELECT currency FROM accounts WHERE workspace_id=$1 AND id=$2", [workspaceId, id]);
+  const existing = await db.query<{ currency: string; is_wallet: boolean }>(`SELECT a.currency, w.account_id IS NOT NULL AS is_wallet
+    FROM accounts a LEFT JOIN crypto_wallets w ON w.account_id = a.id WHERE a.workspace_id=$1 AND a.id=$2`, [workspaceId, id]);
   if (!existing.rowCount) throw new Error("Account not found.");
   const accountCurrency = lockedAccountCurrency(existing.rows[0].currency, input.currency);
+  // Wallet balances come from the blockchain: only the name and color are editable.
+  if (existing.rows[0].is_wallet) {
+    await db.query("UPDATE accounts SET name=$1, color=$2, updated_at=now() WHERE workspace_id=$3 AND id=$4", [input.name, input.color ?? "#db6e30", workspaceId, id]);
+    return;
+  }
   await db.query(`UPDATE accounts SET name=$1, institution=$2, opening_balance=$3, currency=$4, color=$5, kind=$6, updated_at=now() WHERE workspace_id=$7 AND id=$8`,
     [input.name, input.institution ?? "", Number(input.openingBalance ?? 0), accountCurrency, input.color ?? "#573cf0", input.kind ?? "Checking", workspaceId, id]);
 }
